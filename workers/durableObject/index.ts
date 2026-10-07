@@ -65,6 +65,7 @@ interface SearchFilterOptions {
 interface GetEmailsOptions {
 	folder?: string;
 	thread_id?: string;
+	status?: "all" | "unread" | "starred";
 	page?: number;
 	limit?: number;
 	sortColumn?: SortColumn;
@@ -87,6 +88,8 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	auth_code?: string | null;
+	quick_link?: string | null;
 }
 
 interface AttachmentData {
@@ -115,6 +118,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const {
 			folder,
 			thread_id,
+			status = "all",
 			page = 1,
 			limit: rawLimit = 25,
 			sortColumn: rawSortColumn = "date",
@@ -141,6 +145,11 @@ export class MailboxDO extends DurableObject<Env> {
 		if (thread_id) {
 			conditions.push(eq(schema.emails.thread_id, thread_id));
 		}
+		if (status === "unread") {
+			conditions.push(eq(schema.emails.read, 0));
+		} else if (status === "starred") {
+			conditions.push(eq(schema.emails.starred, 1));
+		}
 
 		const orderCol = SORT_COLUMN_MAP[sortColumn];
 		const orderDir = sortDirection === "ASC" ? asc(orderCol) : desc(orderCol);
@@ -160,6 +169,8 @@ export class MailboxDO extends DurableObject<Env> {
 				email_references: schema.emails.email_references,
 				thread_id: schema.emails.thread_id,
 				folder_id: schema.emails.folder_id,
+				auth_code: schema.emails.auth_code,
+				quick_link: schema.emails.quick_link,
 				snippet: sql<string>`SUBSTR(${schema.emails.body}, 1, 300)`,
 			})
 			.from(schema.emails)
@@ -179,8 +190,8 @@ export class MailboxDO extends DurableObject<Env> {
 	/**
 	 * Count total emails matching the given filters (for pagination).
 	 */
-	async countEmails(options: { folder?: string; thread_id?: string } = {}) {
-		const { folder, thread_id } = options;
+	async countEmails(options: { folder?: string; thread_id?: string; status?: "all" | "unread" | "starred" } = {}) {
+		const { folder, thread_id, status = "all" } = options;
 		const conditions: string[] = [];
 		const params: (string | number)[] = [];
 
@@ -194,6 +205,12 @@ export class MailboxDO extends DurableObject<Env> {
 		if (thread_id) {
 			conditions.push(`thread_id = ?${params.length + 1}`);
 			params.push(thread_id);
+		}
+
+		if (status === "unread") {
+			conditions.push("read = 0");
+		} else if (status === "starred") {
+			conditions.push("starred = 1");
 		}
 
 		const where =
@@ -213,6 +230,7 @@ export class MailboxDO extends DurableObject<Env> {
 	async getThreadedEmails(options: GetEmailsOptions = {}) {
 		const {
 			folder,
+			status = "all",
 			page = 1,
 			limit: rawLimit = 25,
 		} = options;
@@ -250,6 +268,7 @@ export class MailboxDO extends DurableObject<Env> {
 						draft_group_key,
 						COUNT(*) as thread_count,
 						SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
+						SUM(CASE WHEN starred = 1 THEN 1 ELSE 0 END) as thread_starred_count,
 						GROUP_CONCAT(DISTINCT sender) as participants
 					FROM folder_emails
 					GROUP BY draft_group_key
@@ -267,14 +286,17 @@ export class MailboxDO extends DurableObject<Env> {
 					lp.id, lp.subject, lp.sender, lp.recipient, lp.date,
 					lp.read, lp.starred, lp.thread_id, lp.folder_id,
 					lp.in_reply_to, lp.email_references,
+					lp.auth_code, lp.quick_link,
 					SUBSTR(lp.body, 1, 300) as snippet,
 					ds.thread_count, ds.thread_unread_count, ds.participants
 				FROM latest_per_group lp
 				JOIN draft_stats ds ON lp.draft_group_key = ds.draft_group_key
 				WHERE lp.rn = 1
+					AND (?4 != 'unread' OR ds.thread_unread_count > 0)
+					AND (?4 != 'starred' OR ds.thread_starred_count > 0)
 				ORDER BY lp.date DESC
 				LIMIT ?2 OFFSET ?3`,
-				folder, limit, offset
+				folder, limit, offset, status
 			);
 
 			const rows = [...result];
@@ -323,6 +345,7 @@ export class MailboxDO extends DurableObject<Env> {
 					COUNT(*) as thread_count,
 					SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
 					SUM(CASE WHEN read = 1 THEN 1 ELSE 0 END) as thread_read_count,
+					SUM(CASE WHEN starred = 1 THEN 1 ELSE 0 END) as thread_starred_count,
 					GROUP_CONCAT(DISTINCT sender) as participants,
 					SUM(CASE WHEN folder_id = (SELECT id FROM folders WHERE name = 'draft' LIMIT 1) THEN 1 ELSE 0 END) as has_draft
 				FROM all_emails_with_conversation
@@ -355,6 +378,7 @@ export class MailboxDO extends DurableObject<Env> {
 				lif.id, lif.subject, lif.sender, lif.recipient, lif.date,
 				lif.read, lif.starred, lif.thread_id, lif.folder_id,
 				lif.in_reply_to, lif.email_references,
+				lif.auth_code, lif.quick_link,
 				SUBSTR(lif.body, 1, 300) as snippet,
 				cs.thread_count, cs.thread_unread_count, cs.participants,
 				CASE WHEN lmc.folder_id != (SELECT id FROM folders WHERE name = 'sent' LIMIT 1)
@@ -367,9 +391,11 @@ export class MailboxDO extends DurableObject<Env> {
 			LEFT JOIN latest_message_per_conversation lmc
 				ON lmc.conversation_id = lif.conversation_id AND lmc.rn = 1
 			WHERE lif.rn = 1
+				AND (?4 != 'unread' OR cs.thread_unread_count > 0)
+				AND (?4 != 'starred' OR cs.thread_starred_count > 0)
 			ORDER BY lif.date DESC
 			LIMIT ?2 OFFSET ?3`,
-			folder, limit, offset
+			folder, limit, offset, status
 		);
 
 		const rows = [...result];
@@ -389,16 +415,26 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Count threaded conversations in a folder (for pagination).
 	 * Returns the number of conversation groups, not individual emails.
 	 */
-	async countThreadedEmails(folder: string) {
+	async countThreadedEmails(folder: string, status: "all" | "unread" | "starred" = "all") {
 		const isDraftFolder = folder === Folders.DRAFT;
 
 		if (isDraftFolder) {
 			const row = [
 				...this.ctx.storage.sql.exec(
-					`SELECT COUNT(DISTINCT COALESCE(in_reply_to, id)) as total
-					 FROM emails
-					 WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)`,
-					folder,
+					`WITH draft_stats AS (
+						SELECT
+							COALESCE(in_reply_to, id) as draft_group_key,
+							SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
+							SUM(CASE WHEN starred = 1 THEN 1 ELSE 0 END) as thread_starred_count
+						FROM emails
+						WHERE folder_id = (SELECT id FROM folders WHERE name = ?1 OR id = ?1 LIMIT 1)
+						GROUP BY COALESCE(in_reply_to, id)
+					)
+					SELECT COUNT(*) as total
+					FROM draft_stats
+					WHERE (?2 != 'unread' OR thread_unread_count > 0)
+						AND (?2 != 'starred' OR thread_starred_count > 0)`,
+					folder, status,
 				),
 			][0] as { total: number } | undefined;
 			return row?.total ?? 0;
@@ -425,10 +461,25 @@ export class MailboxDO extends DurableObject<Env> {
 						END as conversation_id
 					FROM folder_emails
 					GROUP BY raw_thread_id, normalized_subject, thread_id
+				),
+				conversation_stats AS (
+					SELECT
+						COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id)) as conversation_id,
+						SUM(CASE WHEN e.read = 0 THEN 1 ELSE 0 END) as thread_unread_count,
+						SUM(CASE WHEN e.starred = 1 THEN 1 ELSE 0 END) as thread_starred_count
+					FROM emails e
+					LEFT JOIN thread_to_conversation tc
+						ON COALESCE(e.thread_id, e.id) = tc.raw_thread_id
+					WHERE COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id)) IN (
+						SELECT DISTINCT conversation_id FROM thread_to_conversation
+					)
+					GROUP BY COALESCE(tc.conversation_id, COALESCE(e.thread_id, e.id))
 				)
-				SELECT COUNT(DISTINCT conversation_id) as total
-				FROM thread_to_conversation`,
-				folder,
+				SELECT COUNT(*) as total
+				FROM conversation_stats
+				WHERE (?2 != 'unread' OR thread_unread_count > 0)
+					AND (?2 != 'starred' OR thread_starred_count > 0)`,
+				folder, status,
 			),
 		][0] as { total: number } | undefined;
 		return row?.total ?? 0;
@@ -705,7 +756,7 @@ export class MailboxDO extends DurableObject<Env> {
 		const query = `
 			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
-				e.thread_id, e.folder_id,
+				e.thread_id, e.folder_id, e.auth_code, e.quick_link,
 				SUBSTR(e.body, 1, 300) as snippet,
 				f.name as folder_name
 			FROM emails e
@@ -862,6 +913,8 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				auth_code: email.auth_code ?? null,
+				quick_link: email.quick_link ?? null,
 			})
 			.run();
 

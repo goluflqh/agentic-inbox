@@ -17,3 +17,15 @@ opencode.jsonc
 skills-lock.json
 .DS_Store
 worker-configuration.d.ts
+.codex-logs/
+.gitnexus
+
+# Local agent/browser/session artifacts
+.agent/
+.claude/
+.playwright-cli/
+AGENTS.md
+CHECKPOINT_NEXT_SESSION.md
+MEM0_SEED_MAIL_DOMAIN.md
+SECURITY_REVIEW.md
+SETUP_QUANGHUYLEE.md

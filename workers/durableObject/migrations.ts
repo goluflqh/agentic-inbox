@@ -168,4 +168,11 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_add_quick_email_metadata",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN auth_code TEXT;
+            ALTER TABLE emails ADD COLUMN quick_link TEXT;
+        `),
+	},
 ];

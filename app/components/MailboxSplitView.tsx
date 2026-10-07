@@ -9,12 +9,16 @@ import EmailPanel from "~/components/EmailPanel";
 interface MailboxSplitViewProps {
 	selectedEmailId: string | null;
 	isComposing: boolean;
+	panelMailboxId?: string;
+	panelFolder?: string;
 	children: ReactNode;
 }
 
 export default function MailboxSplitView({
 	selectedEmailId,
 	isComposing,
+	panelMailboxId,
+	panelFolder,
 	children,
 }: MailboxSplitViewProps) {
 	const isPanelOpen = selectedEmailId !== null || isComposing;
@@ -38,11 +42,11 @@ export default function MailboxSplitView({
 						<div className="flex flex-col h-full overflow-y-auto">
 							<ComposePanel />
 							<div className="border-t border-kumo-line">
-								<EmailPanel emailId={selectedEmailId} />
+								<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} />
 							</div>
 						</div>
 					) : selectedEmailId ? (
-						<EmailPanel emailId={selectedEmailId} />
+						<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} />
 					) : null}
 				</div>
 			)}

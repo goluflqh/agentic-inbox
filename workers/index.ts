@@ -8,12 +8,14 @@ import PostalMime from "postal-mime";
 import { z } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, type StoredAttachment } from "./lib/attachments";
+import { extractQuickEmailMetadata } from "./lib/quick-email-metadata";
 import {
 	validateSender,
 	SenderValidationError,
 	generateMessageId,
 	buildThreadingHeaders,
 	listMailboxes,
+	getMailboxStub,
 } from "./lib/email-helpers";
 import { SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
@@ -63,6 +65,70 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	return v === "true" || v === "1";
 }
 
+function statusQuery(c: AppContext): "all" | "unread" | "starred" {
+	const status = c.req.query("status")?.toLowerCase();
+	return status === "unread" || status === "starred" ? status : "all";
+}
+
+function defaultMailboxSettings(name: string) {
+	return {
+		fromName: name,
+		forwarding: { enabled: false, email: "" },
+		signature: { enabled: false, text: "" },
+		autoReply: { enabled: false, subject: "", message: "" },
+	};
+}
+
+function configuredDomains(env: Env): string[] {
+	return (env.DOMAINS || "")
+		.split(",")
+		.map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+		.filter(Boolean);
+}
+
+function isConfiguredDomainAddress(env: Env, email: string): boolean {
+	const domain = email.split("@")[1]?.toLowerCase();
+	const domains = configuredDomains(env);
+	return !!domain && (domains.length === 0 || domains.some((d) => domain === d || domain.endsWith("." + d)));
+}
+
+function mailboxNameFromAddress(email: string): string {
+	return email.split("@")[0] || email;
+}
+
+function mailboxDomain(email: string): string {
+	return email.split("@")[1]?.toLowerCase() || "";
+}
+
+function annotateMailboxEmail<T extends Record<string, unknown>>(email: T, mailboxId: string) {
+	return {
+		...email,
+		mailbox_id: mailboxId,
+		mailbox_email: mailboxId,
+		mailbox_name: mailboxNameFromAddress(mailboxId),
+		mailbox_domain: mailboxDomain(mailboxId),
+	} as T & {
+		mailbox_id: string;
+		mailbox_email: string;
+		mailbox_name: string;
+		mailbox_domain: string;
+	};
+}
+
+async function createMailboxRecord(
+	env: Env,
+	email: string,
+	name: string,
+	settings?: Record<string, unknown>,
+) {
+	const key = `mailboxes/${email}.json`;
+	const finalSettings = { ...defaultMailboxSettings(name), ...settings };
+	await env.BUCKET.put(key, JSON.stringify(finalSettings));
+	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(email));
+	await stub.getFolders();
+	return finalSettings;
+}
+
 // -- App & middleware -----------------------------------------------
 
 const app = new Hono<MailboxContext>();
@@ -96,7 +162,94 @@ app.get("/api/v1/config", (c) => {
 
 app.get("/api/v1/mailboxes", async (c) => {
 	const allMailboxes = await listMailboxes(c.env.BUCKET);
-	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
+	const mailboxes = await Promise.all(
+		allMailboxes.map(async (mailbox) => {
+			const stub = getMailboxStub(c.env, mailbox.id) as any;
+			try {
+				const [folders, inboxCount] = await Promise.all([
+					stub.getFolders(),
+					stub.countThreadedEmails(Folders.INBOX),
+				]);
+				const inbox = (folders as { id: string; unreadCount?: number }[]).find(
+					(folder) => folder.id === Folders.INBOX,
+				);
+				return {
+					...mailbox,
+					name: mailbox.id,
+					unreadCount: inbox?.unreadCount ?? 0,
+					inboxCount: Number(inboxCount) || 0,
+				};
+			} catch (e) {
+				console.error(`Failed to load mailbox counts for ${mailbox.id}:`, (e as Error).message);
+				return { ...mailbox, name: mailbox.id, unreadCount: 0, inboxCount: 0 };
+			}
+		}),
+	);
+	return c.json(mailboxes);
+});
+
+app.get("/api/v1/all-emails", async (c) => {
+	const folder = c.req.query("folder") || Folders.INBOX;
+	const domain = c.req.query("domain")?.toLowerCase();
+	const status = statusQuery(c as AppContext);
+	const q = c.req.query("q")?.trim();
+	const page = Math.max(intQuery(c as AppContext, "page") || 1, 1);
+	const limit = Math.min(Math.max(intQuery(c as AppContext, "limit") || 25, 1), 100);
+	const fetchLimit = Math.min(page * limit, 100);
+	const offset = (page - 1) * limit;
+	const allMailboxes = await listMailboxes(c.env.BUCKET);
+	const mailboxes = domain
+		? allMailboxes.filter((m) => mailboxDomain(m.email) === domain)
+		: allMailboxes;
+
+	const results = await Promise.all(
+		mailboxes.map(async (mailbox) => {
+			const stub = getMailboxStub(c.env, mailbox.id) as any;
+			try {
+				if (q) {
+					const searchOpts = {
+						query: q,
+						folder,
+						is_read: status === "unread" ? false : undefined,
+						is_starred: status === "starred" ? true : undefined,
+					};
+					const [emails, totalCount] = await Promise.all([
+						stub.searchEmails({ ...searchOpts, page: 1, limit: fetchLimit }),
+						stub.countSearchResults(searchOpts),
+					]);
+					return {
+						emails: (emails as Record<string, unknown>[]).map((email) =>
+							annotateMailboxEmail(email, mailbox.id),
+						),
+						totalCount: Number(totalCount) || 0,
+					};
+				}
+				const [emails, totalCount] = await Promise.all([
+					stub.getThreadedEmails({ folder, status, page: 1, limit: fetchLimit }),
+					stub.countThreadedEmails(folder, status),
+				]);
+				return {
+					emails: (emails as Record<string, unknown>[]).map((email) =>
+						annotateMailboxEmail(email, mailbox.id),
+					),
+					totalCount: Number(totalCount) || 0,
+				};
+			} catch (e) {
+				console.error(`Failed to aggregate mailbox ${mailbox.id}:`, (e as Error).message);
+				return { emails: [], totalCount: 0 };
+			}
+		}),
+	);
+
+	const emails = results
+		.flatMap((result) => result.emails)
+		.sort((a, b) => new Date(String(b.date || "")).getTime() - new Date(String(a.date || "")).getTime())
+		.slice(offset, offset + limit);
+
+	return c.json({
+		emails,
+		totalCount: results.reduce((sum, result) => sum + result.totalCount, 0),
+	});
 });
 
 app.post("/api/v1/mailboxes", async (c) => {
@@ -106,13 +259,12 @@ app.post("/api/v1/mailboxes", async (c) => {
 	if (allowedAddresses.length > 0 && !allowedAddresses.map((a) => a.toLowerCase()).includes(email)) {
 		return c.json({ error: "Mailbox creation is restricted to configured EMAIL_ADDRESSES" }, 403);
 	}
+	if (!isConfiguredDomainAddress(c.env, email)) {
+		return c.json({ error: "Mailbox domain is not configured in DOMAINS" }, 400);
+	}
 	const key = `mailboxes/${email}.json`;
 	if (await c.env.BUCKET.head(key)) return c.json({ error: "Mailbox already exists" }, 409);
-	const defaultSettings = { fromName: name, forwarding: { enabled: false, email: "" }, signature: { enabled: false, text: "" }, autoReply: { enabled: false, subject: "", message: "" } };
-	const finalSettings = { ...defaultSettings, ...settings };
-	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
-	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
-	await stub.getFolders();
+	const finalSettings = await createMailboxRecord(c.env, email, name, settings);
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
 });
 
@@ -146,20 +298,34 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const folder = c.req.query("folder");
 	const thread_id = c.req.query("thread_id");
 	const threaded = boolQuery(c, "threaded");
+	const status = statusQuery(c);
+	const q = c.req.query("q")?.trim();
 	const page = intQuery(c, "page");
 	const limit = intQuery(c, "limit");
 	const sortColumn = c.req.query("sortColumn") as any;
 	const sortDirection = c.req.query("sortDirection") as "ASC" | "DESC" | undefined;
 	const stub = c.var.mailboxStub;
 
-	if (threaded && folder) {
-		const emails = await (stub as any).getThreadedEmails({ folder, page, limit });
-		const totalCount = await (stub as any).countThreadedEmails(folder);
+	if (q) {
+		const searchOpts = {
+			query: q,
+			folder,
+			is_read: status === "unread" ? false : undefined,
+			is_starred: status === "starred" ? true : undefined,
+		};
+		const emails = await (stub as any).searchEmails({ ...searchOpts, page, limit });
+		const totalCount = await (stub as any).countSearchResults(searchOpts);
 		return c.json({ emails, totalCount });
 	}
-	const emails = await stub.getEmails({ folder, thread_id, page, limit, sortColumn, sortDirection });
+
+	if (threaded && folder) {
+		const emails = await (stub as any).getThreadedEmails({ folder, status, page, limit });
+		const totalCount = await (stub as any).countThreadedEmails(folder, status);
+		return c.json({ emails, totalCount });
+	}
+	const emails = await stub.getEmails({ folder, thread_id, status, page, limit, sortColumn, sortDirection });
 	if (folder) {
-		const totalCount = await stub.countEmails({ folder, thread_id });
+		const totalCount = await stub.countEmails({ folder, thread_id, status });
 		return c.json({ emails, totalCount });
 	}
 	return c.json(emails);
@@ -182,6 +348,18 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const stub = c.var.mailboxStub;
 	const rateLimitError = await (stub as any).checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
+
+	let delivery: { messageId: string };
+	try {
+		delivery = await sendEmail(c.env, {
+			to, cc, bcc, from, subject, html, text,
+			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
+			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
+		});
+	} catch (e) {
+		return c.json({ error: `Failed to send email: ${(e as Error).message}` }, 502);
+	}
+
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
 	await stub.createEmail(Folders.SENT, {
@@ -201,14 +379,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 		]),
 	}, attachmentData);
 
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
-			to, cc, bcc, from, subject, html, text,
-			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
-			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
-		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
-	);
-	return c.json({ id: messageId, status: "sent" }, 202);
+	return c.json({ id: messageId, status: "sent", deliveryMessageId: delivery.messageId }, 202);
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
@@ -362,9 +533,13 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
 	} else { mailboxId = allRecipients[0]; }
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
+	if (!isConfiguredDomainAddress(env, mailboxId)) { console.log(`Ignoring email for ${mailboxId}: domain is not configured`); return; }
 
 	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
+	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) {
+		await createMailboxRecord(env, mailboxId, mailboxNameFromAddress(mailboxId));
+		console.log(`Auto-created mailbox for inbound email: ${mailboxId}`);
+	}
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
@@ -391,6 +566,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	}
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
+	const quickMetadata = extractQuickEmailMetadata({
+		subject: parsedEmail.subject || "",
+		text: parsedEmail.text || "",
+		html: parsedEmail.html || "",
+	});
 
 	await stub.createEmail(Folders.INBOX, {
 		id: messageId, subject: parsedEmail.subject || "",
@@ -400,6 +580,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		body: parsedEmail.html || parsedEmail.text || "",
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
+		auth_code: quickMetadata.auth_code, quick_link: quickMetadata.quick_link,
 	}, attachmentData);
 
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));

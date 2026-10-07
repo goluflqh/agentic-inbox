@@ -111,6 +111,8 @@ const api = {
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
 
 	// Emails
+	listAllEmails: (params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
+		get<EmailListResponse>("/api/v1/all-emails", { params, signal: opts?.signal }),
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/emails`, { params, signal: opts?.signal }),
 	sendEmail: (mailboxId: string, email: unknown) =>

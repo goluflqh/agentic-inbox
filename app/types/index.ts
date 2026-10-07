@@ -21,10 +21,16 @@ export interface Mailbox {
 	email: string;
 	name: string;
 	settings?: MailboxSettings;
+	unreadCount?: number;
+	inboxCount?: number;
 }
 
 export interface Email {
 	id: string;
+	mailbox_id?: string;
+	mailbox_email?: string;
+	mailbox_name?: string;
+	mailbox_domain?: string;
 	thread_id?: string | null;
 	folder_id?: string | null;
 	subject: string;
@@ -40,6 +46,8 @@ export interface Email {
 	email_references?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	auth_code?: string | null;
+	quick_link?: string | null;
 	attachments?: Attachment[];
 	snippet?: string | null;
 	// Thread aggregate fields (only present in threaded list view)

@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Pagination, Tooltip } from "@cloudflare/kumo";
+import { Button, Input, Pagination, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -18,9 +18,10 @@ import {
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
+import EmailQuickActions from "~/components/EmailQuickActions";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
 import {
@@ -153,19 +154,46 @@ export default function EmailListRoute() {
 		startCompose,
 	} = useUIStore();
 	const [page, setPage] = useState(1);
+	const [searchParams, setSearchParams] = useSearchParams();
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
 	const deleteEmail = useDeleteEmail();
+	const statusParam = searchParams.get("status");
+	const status = statusParam === "unread" || statusParam === "starred" ? statusParam : "all";
+	const q = searchParams.get("q") || "";
+	const [searchInput, setSearchInput] = useState(q);
+
+	useEffect(() => {
+		setSearchInput(q);
+	}, [q]);
+
+	const setFilter = (next: { status?: "all" | "unread" | "starred"; q?: string }) => {
+		const params = new URLSearchParams(searchParams);
+		const nextStatus = next.status ?? status;
+		const nextQ = next.q ?? q;
+		if (nextStatus === "all") params.delete("status");
+		else params.set("status", nextStatus);
+		if (nextQ.trim()) params.set("q", nextQ.trim());
+		else params.delete("q");
+		setSearchParams(params);
+	};
+
+	const handleSearchSubmit = (event: React.FormEvent) => {
+		event.preventDefault();
+		setFilter({ q: searchInput });
+	};
 
 	const params = useMemo(
 		() => ({
 			folder: folder || "",
 			page: String(page),
 			limit: String(PAGE_SIZE),
+			...(status !== "all" ? { status } : {}),
+			...(q ? { q } : {}),
 		}),
-		[folder, page],
+		[folder, page, q, status],
 	);
 
 	const {
@@ -175,6 +203,7 @@ export default function EmailListRoute() {
 
 	const emails = emailData?.emails ?? [];
 	const totalCount = emailData?.totalCount ?? 0;
+	const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
 	const { data: folders = [] } = useFolders(mailboxId);
 
@@ -190,14 +219,23 @@ export default function EmailListRoute() {
 	const prevFolderRef = useRef<string | undefined>(undefined);
 
 	useEffect(() => {
-		const folderChanged = prevFolderRef.current !== `${mailboxId}/${folder}`;
-		prevFolderRef.current = `${mailboxId}/${folder}`;
+		const folderChanged = prevFolderRef.current !== `${mailboxId}/${folder}/${status}/${q}`;
+		prevFolderRef.current = `${mailboxId}/${folder}/${status}/${q}`;
 
 		if (folderChanged) {
 			closePanel();
 			setPage(1);
+			setSelectedIds(new Set());
 		}
-	}, [mailboxId, folder, closePanel]);
+	}, [mailboxId, folder, q, status, closePanel]);
+
+	useEffect(() => {
+		const visibleIds = new Set(emails.map((email) => email.id));
+		setSelectedIds((current) => {
+			const next = new Set([...current].filter((id) => visibleIds.has(id)));
+			return next.size === current.size ? current : next;
+		});
+	}, [emails]);
 
 	const toggleStar = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();
@@ -230,6 +268,38 @@ export default function EmailListRoute() {
 		}
 	};
 
+	const allVisibleSelected = emails.length > 0 && emails.every((email) => selectedIds.has(email.id));
+	const selectedCount = selectedIds.size;
+
+	const toggleSelected = (emailId: string) => {
+		setSelectedIds((current) => {
+			const next = new Set(current);
+			if (next.has(emailId)) next.delete(emailId);
+			else next.add(emailId);
+			return next;
+		});
+	};
+
+	const toggleAllVisible = () => {
+		setSelectedIds((current) => {
+			if (allVisibleSelected) return new Set();
+			const next = new Set(current);
+			for (const email of emails) next.add(email.id);
+			return next;
+		});
+	};
+
+	const markEmailsReadState = async (targetEmails: Email[], read: boolean) => {
+		if (!mailboxId || targetEmails.length === 0) return;
+		await Promise.all(targetEmails.map((email) => {
+			if (read && email.thread_id && email.thread_count && email.thread_count > 1) {
+				return markThreadRead.mutateAsync({ mailboxId, threadId: email.thread_id });
+			}
+			return updateEmail.mutateAsync({ mailboxId, id: email.id, data: { read } });
+		}));
+		setSelectedIds(new Set());
+	};
+
 	// Thread-aware helpers
 	const hasUnread = (email: Email): boolean => {
 		if (email.thread_unread_count !== undefined) {
@@ -237,6 +307,9 @@ export default function EmailListRoute() {
 		}
 		return !email.read;
 	};
+
+	const selectedEmails = emails.filter((email) => selectedIds.has(email.id));
+	const unreadVisibleEmails = emails.filter((email) => hasUnread(email));
 
 	const handleRowClick = (email: Email) => {
 		selectEmail(email.id);
@@ -274,11 +347,44 @@ export default function EmailListRoute() {
 			isComposing={isComposing}
 		>
 				{/* Folder header */}
-				<div className="flex items-center justify-between px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
-					<h1 className="text-lg font-semibold text-kumo-default">
-						{folderName}
-					</h1>
-					<div className="flex items-center gap-1">
+				<div className="flex flex-col gap-3 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
+					<div className="min-w-0">
+						<h1 className="text-lg font-semibold text-kumo-default truncate">
+							{status === "all" ? folderName : `${status === "unread" ? "Unread" : "Starred"} ${folderName.toLowerCase()}`}
+						</h1>
+					</div>
+					<form onSubmit={handleSearchSubmit} className="flex min-w-0 gap-2">
+						<div className="min-w-0 flex-1">
+							<Input
+								aria-label="Search mailbox"
+								placeholder="Search mail"
+								size="sm"
+								value={searchInput}
+								onChange={(event) => setSearchInput(event.target.value)}
+							/>
+						</div>
+						<Button type="submit" variant="secondary" size="sm">
+							Search
+						</Button>
+						{q && (
+							<Button type="button" variant="ghost" size="sm" onClick={() => setFilter({ q: "" })}>
+								Clear
+							</Button>
+						)}
+					</form>
+					<div className="flex flex-wrap items-center gap-2">
+						<div className="flex rounded-md border border-kumo-line bg-kumo-base p-0.5">
+							{(["all", "unread", "starred"] as const).map((item) => (
+								<button
+									key={item}
+									type="button"
+									onClick={() => setFilter({ status: item })}
+									className={`rounded px-3 py-1 text-sm transition-colors ${status === item ? "bg-kumo-fill font-semibold text-kumo-default" : "text-kumo-strong hover:bg-kumo-tint"}`}
+								>
+									{item === "all" ? "All" : item === "unread" ? "Unread" : "Starred"}
+								</button>
+							))}
+						</div>
 						{totalCount > 0 && (
 							<span className="text-sm text-kumo-subtle mr-2 hidden sm:inline">
 								{totalCount} conversation{totalCount !== 1 ? "s" : ""}
@@ -307,6 +413,47 @@ export default function EmailListRoute() {
 					</div>
 				</div>
 
+				<div className="flex flex-wrap items-center gap-2 border-b border-kumo-line bg-kumo-recessed px-4 py-2 md:px-5">
+					<label className="flex items-center gap-2 text-sm text-kumo-strong">
+						<input
+							type="checkbox"
+							checked={allVisibleSelected}
+							onChange={toggleAllVisible}
+							aria-label="Select all visible emails"
+						/>
+						<span>{selectedCount > 0 ? `${selectedCount} selected` : "Select page"}</span>
+					</label>
+					<Button
+						variant="secondary"
+						size="sm"
+						disabled={selectedCount === 0}
+						onClick={() => void markEmailsReadState(selectedEmails, true)}
+					>
+						Mark read
+					</Button>
+					<Button
+						variant="secondary"
+						size="sm"
+						disabled={selectedCount === 0}
+						onClick={() => void markEmailsReadState(selectedEmails, false)}
+					>
+						Mark unread
+					</Button>
+					<Button
+						variant="secondary"
+						size="sm"
+						disabled={unreadVisibleEmails.length === 0}
+						onClick={() => void markEmailsReadState(unreadVisibleEmails, true)}
+					>
+						Mark page read
+					</Button>
+					{selectedCount > 0 && (
+						<Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
+							Clear
+						</Button>
+					)}
+				</div>
+
 				{/* Email rows */}
 				<div className="flex-1 overflow-y-auto">
 				{isRefreshing && emails.length === 0 ? (
@@ -333,6 +480,14 @@ export default function EmailListRoute() {
 										} ${isSelected ? "bg-kumo-tint" : "hover:bg-kumo-tint"}`}
 									>
 										{/* Unread dot */}
+										<input
+											type="checkbox"
+											checked={selectedIds.has(email.id)}
+											onClick={(e) => e.stopPropagation()}
+											onChange={() => toggleSelected(email.id)}
+											aria-label={`Select ${email.subject || "email"}`}
+											className="shrink-0"
+										/>
 										<div className="w-2.5 shrink-0 flex justify-center">
 											{hasUnread(email) && (
 												<div className="h-2 w-2 rounded-full bg-kumo-brand" />
@@ -400,10 +555,16 @@ export default function EmailListRoute() {
 												</span>
 											)}
 										</div>
+										<EmailQuickActions
+											email={email}
+											compact
+											stopPropagation
+											className="mt-1"
+										/>
 									</div>
 
-										{/* Hover actions */}
-										<div className="hidden group-hover:flex items-center shrink-0">
+										{/* Row actions */}
+										<div className="flex items-center shrink-0 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:focus-within:opacity-100">
 											<Tooltip content={email.read ? "Mark unread" : "Mark read"} asChild>
 												<Button
 													variant="ghost"

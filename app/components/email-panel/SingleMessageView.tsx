@@ -4,6 +4,7 @@
 
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
+import EmailQuickActions from "~/components/EmailQuickActions";
 import { formatDetailDate, rewriteInlineImages } from "~/lib/utils";
 import type { Email } from "~/types";
 
@@ -37,6 +38,7 @@ export default function SingleMessageView({
 						{formatDetailDate(email.date)}
 					</span>
 				</div>
+				<EmailQuickActions email={email} className="mt-3" />
 			</div>
 
 			<div className="flex-1 min-h-0">

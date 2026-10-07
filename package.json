@@ -5,7 +5,12 @@
 	"type": "module",
 	"cloudflare": {
 		"label": "Agentic Inbox",
-		"products": ["Workers", "Durable Objects", "R2", "Workers AI"],
+		"products": [
+			"Workers",
+			"Durable Objects",
+			"R2",
+			"Workers AI"
+		],
 		"bindings": {
 			"DOMAINS": {
 				"description": "Your domain with [Email Routing](https://developers.cloudflare.com/email-routing/) enabled (e.g. `example.com`). After deploying, create a catch-all Email Routing rule pointing to this Worker."
@@ -18,7 +23,11 @@
 		"deploy": "npm run build && wrangler deploy",
 		"dev": "react-router dev",
 		"preview": "npm run build && vite preview",
-		"typecheck": "npm run cf-typegen && react-router typegen && tsc -b"
+		"typecheck": "npm run cf-typegen && react-router typegen && tsc -b",
+		"local:start": "powershell -ExecutionPolicy Bypass -File scripts/local-start.ps1",
+		"local:stop": "powershell -ExecutionPolicy Bypass -File scripts/local-stop.ps1",
+		"local:status": "powershell -ExecutionPolicy Bypass -File scripts/local-status.ps1",
+		"domain:add": "powershell -ExecutionPolicy Bypass -File scripts/add-mail-domain.ps1"
 	},
 	"dependencies": {
 		"@cloudflare/ai-chat": "^0.1.8",
@@ -78,7 +87,9 @@
 		"@tiptap/extension-ordered-list": "3.20.2",
 		"@tiptap/extension-paragraph": "3.20.2",
 		"@tiptap/extension-strike": "3.20.2",
-		"@tiptap/extension-text": "3.20.2"
+		"@tiptap/extension-text": "3.20.2",
+		"esbuild": "0.28.1",
+		"ws": "8.21.0"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.0.12",

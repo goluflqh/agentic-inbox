@@ -103,6 +103,116 @@ function getToolNameFromPart(part: UIMessage["parts"][number]): string | null {
 	return null;
 }
 
+type EmailToolItem = {
+	id?: string;
+	subject?: string | null;
+	sender?: string | null;
+	recipient?: string | null;
+	date?: string | null;
+	read?: boolean;
+	snippet?: string | null;
+};
+
+function getToolOutputFromPart(part: UIMessage["parts"][number]): unknown {
+	const toolPart = part as any;
+	return toolPart.output ?? toolPart.result ?? toolPart.toolResult;
+}
+
+function extractEmailItems(output: unknown): EmailToolItem[] | null {
+	const value = output as any;
+	const items = Array.isArray(value)
+		? value
+		: Array.isArray(value?.emails)
+			? value.emails
+			: Array.isArray(value?.messages)
+				? value.messages
+				: Array.isArray(value?.result)
+					? value.result
+					: Array.isArray(value?.data)
+						? value.data
+						: null;
+	if (!items) return null;
+	return items.filter(
+		(item: unknown): item is EmailToolItem =>
+			!!item && typeof item === "object",
+	);
+}
+
+function cleanSnippet(value?: string | null): string {
+	if (!value) return "";
+	return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function formatEmailDate(value?: string | null): string {
+	if (!value) return "";
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "";
+	return date.toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+}
+
+function ToolOutputFallback({
+	toolName,
+	output,
+}: {
+	toolName: string;
+	output: unknown;
+}) {
+	if (toolName !== "list_emails" && toolName !== "search_emails") return null;
+	const emails = extractEmailItems(output);
+	if (!emails) return null;
+
+	return (
+		<div className="w-full rounded-lg border border-kumo-line bg-kumo-elevated px-3 py-2 text-xs text-kumo-default">
+			{emails.length === 0 ? (
+				<p className="text-kumo-subtle">No emails found.</p>
+			) : (
+				<div className="flex flex-col gap-2">
+					{emails.slice(0, 5).map((email, index) => {
+						const sender = email.sender || email.recipient || "Unknown sender";
+						const subject = email.subject || "(no subject)";
+						const date = formatEmailDate(email.date);
+						const snippet = cleanSnippet(email.snippet);
+						return (
+							<div
+								key={email.id ?? subject + "-" + index}
+								className="min-w-0 border-b border-kumo-line/60 pb-2 last:border-0 last:pb-0"
+							>
+								<div className="flex min-w-0 items-center gap-1.5">
+									{!email.read && (
+										<span className="h-1.5 w-1.5 shrink-0 rounded-full bg-kumo-brand" />
+									)}
+									<span className="truncate font-medium text-kumo-strong">
+										{sender}
+									</span>
+									{date && (
+										<span className="shrink-0 text-kumo-subtle">
+											{date}
+										</span>
+									)}
+								</div>
+								<div className="truncate text-kumo-default">{subject}</div>
+								{snippet && (
+									<div className="max-h-10 overflow-hidden text-kumo-subtle">
+										{snippet}
+									</div>
+								)}
+							</div>
+						);
+					})}
+					{emails.length > 5 && (
+						<div className="text-kumo-subtle">+{emails.length - 5} more</div>
+					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
 function hasDraftReplyTool(message: UIMessage): boolean {
 	return message.parts.some((part) => {
 		const toolName = getToolNameFromPart(part);
@@ -142,6 +252,9 @@ function MessageBubble({
 	isStreaming: boolean;
 }) {
 	const isUser = message.role === "user";
+	const hasVisibleText = message.parts.some(
+		(part) => part.type === "text" && part.text.trim(),
+	);
 
 	return (
 		<div
@@ -271,12 +384,20 @@ function MessageBubble({
 					}
 					const toolName = getToolNameFromPart(part);
 					if (toolName) {
+						const output = getToolOutputFromPart(part);
 						return (
-							<ToolCallBadge
-								key={key}
-								toolName={toolName}
-								state={(part as any).state ?? "running"}
-							/>
+							<div key={key} className="flex w-full flex-col gap-1">
+								<ToolCallBadge
+									toolName={toolName}
+									state={(part as any).state ?? "running"}
+								/>
+								{!isUser && !hasVisibleText && (
+									<ToolOutputFallback
+										toolName={toolName}
+										output={output}
+									/>
+								)}
+							</div>
 						);
 					}
 					return null;
@@ -420,11 +541,16 @@ function AgentChatConnected({
 											id?: string;
 										} | null = null;
 										for (const part of msg.parts) {
-											if (
-												(part as any).toolName === "draft_reply" &&
-												(part as any).result
-											) {
-												draftData = (part as any).result;
+											const toolName = getToolNameFromPart(part);
+											const rawDraftData = getToolOutputFromPart(part) as any;
+											if (toolName === "draft_reply" && rawDraftData) {
+												const draft = rawDraftData.draft ?? rawDraftData;
+												draftData = {
+													id: draft.id ?? rawDraftData.draftId,
+													to: draft.to ?? draft.recipient ?? rawDraftData.to,
+													subject: draft.subject ?? rawDraftData.subject,
+													body: draft.body ?? rawDraftData.body,
+												};
 												break;
 											}
 										}

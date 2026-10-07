@@ -16,6 +16,7 @@ export default function Header() {
 	const location = useLocation();
 	const [searchParams] = useSearchParams();
 	const { toggleSidebar, toggleAgentPanel, isAgentPanelOpen } = useUIStore();
+	const hasMailboxContext = Boolean(mailboxId);
 
 	// Sync search input with URL query param so it stays populated
 	const urlQuery = searchParams.get("q") || "";
@@ -26,7 +27,7 @@ export default function Header() {
 	}, [urlQuery, location.pathname]);
 
 	const performSearch = () => {
-		if (mailboxId && searchQuery.trim()) {
+		if (hasMailboxContext && mailboxId && searchQuery.trim()) {
 			const q = searchQuery.trim();
 			navigate(`/mailbox/${mailboxId}/search?q=${encodeURIComponent(q)}`);
 			setIsSearchExpanded(false);
@@ -82,6 +83,7 @@ export default function Header() {
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
 						onKeyDown={handleKeyDown}
+						disabled={!hasMailboxContext}
 					/>
 					{searchQuery && (
 						<button
@@ -101,6 +103,7 @@ export default function Header() {
 						icon={<MagnifyingGlassIcon size={20} />}
 						onClick={performSearch}
 						aria-label="Search"
+						disabled={!hasMailboxContext}
 					/>
 				</Tooltip>
 			</div>
@@ -112,14 +115,15 @@ export default function Header() {
 					shape="square"
 					size="sm"
 					icon={<MagnifyingGlassIcon size={20} />}
-					onClick={() => setIsSearchExpanded(true)}
+					onClick={() => hasMailboxContext && setIsSearchExpanded(true)}
 					aria-label="Search"
+					disabled={!hasMailboxContext}
 					className="md:hidden shrink-0"
 				/>
 			)}
 
 			<div className="flex items-center gap-1 ml-auto shrink-0">
-				<Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
+				{hasMailboxContext && <Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
 					<Button
 						variant={isAgentPanelOpen ? "secondary" : "ghost"}
 						shape="square"
@@ -128,8 +132,8 @@ export default function Header() {
 						aria-label="Toggle agent panel"
 						className="hidden lg:inline-flex"
 					/>
-				</Tooltip>
-				<Tooltip content="Settings" side="bottom" asChild>
+				</Tooltip>}
+				{hasMailboxContext && <Tooltip content="Settings" side="bottom" asChild>
 					<Button
 						variant={isSettingsActive ? "secondary" : "ghost"}
 						shape="square"
@@ -143,7 +147,7 @@ export default function Header() {
 						}
 						aria-label="Settings"
 					/>
-				</Tooltip>
+				</Tooltip>}
 			</div>
 		</header>
 	);

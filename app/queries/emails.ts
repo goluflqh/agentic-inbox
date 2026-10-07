@@ -47,6 +47,18 @@ export function useEmails(
 	});
 }
 
+export function useAllEmails(
+	params: Record<string, string>,
+	options?: { enabled?: boolean; refetchInterval?: number },
+) {
+	return useQuery<EmailListResponse>({
+		queryKey: queryKeys.emails.allList(params),
+		queryFn: ({ signal }) => api.listAllEmails(params, { signal }) as Promise<EmailListResponse>,
+		enabled: options?.enabled ?? true,
+		refetchInterval: options?.refetchInterval,
+	});
+}
+
 export function useEmail(
 	mailboxId: string | undefined,
 	emailId: string | undefined,
@@ -98,6 +110,8 @@ function useInvalidateEmailData() {
 	const qc = useQueryClient();
 	return (mailboxId: string) => {
 		qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+		qc.invalidateQueries({ queryKey: ["all-emails"] });
+		qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 		qc.invalidateQueries({
 			queryKey: queryKeys.folders.list(mailboxId),
 		});
@@ -180,6 +194,8 @@ export function useUpdateEmail() {
 		onSettled: (_data, _err, { mailboxId }) => {
 			// Always refetch to ensure server truth
 			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 			qc.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});
@@ -197,6 +213,8 @@ export function useMarkThreadRead() {
 			api.markThreadRead(mailboxId, threadId),
 		onSuccess: (_data, { mailboxId }) => {
 			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
 			qc.invalidateQueries({
 				queryKey: queryKeys.folders.list(mailboxId),
 			});

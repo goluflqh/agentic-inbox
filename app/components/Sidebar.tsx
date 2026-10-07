@@ -6,19 +6,21 @@ import { Badge, Button, Dialog, Input, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	CaretLeftIcon,
+	EnvelopeOpenIcon,
 	FileIcon,
 	FolderIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
+	StarIcon,
 	TrashIcon,
 	TrayIcon,
 } from "@phosphor-icons/react";
 import { useMemo, useState } from "react";
-import { NavLink, useNavigate, useParams } from "react-router";
+import { Link as RouterLink, NavLink, useLocation, useNavigate, useParams } from "react-router";
 import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { useCreateFolder, useFolders } from "~/queries/folders";
-import { useMailbox } from "~/queries/mailboxes";
+import { useMailbox, useMailboxes } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
 
 const FOLDER_ICONS: Record<string, React.ReactNode> = {
@@ -52,13 +54,15 @@ function FolderLink({
 	unreadCount,
 	onClick,
 }: FolderLinkProps) {
+	const location = useLocation();
+	const isStatusView = new URLSearchParams(location.search).has("status") && to === location.pathname;
 	return (
 		<NavLink
 			to={to}
 			onClick={onClick}
 			className={({ isActive }) =>
 				`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
-					isActive
+					isActive && !isStatusView
 						? "bg-kumo-fill font-semibold text-kumo-default"
 						: "text-kumo-strong hover:bg-kumo-tint"
 				}`
@@ -73,13 +77,46 @@ function FolderLink({
 	);
 }
 
+function ViewLink({
+	to,
+	icon,
+	label,
+	isActive,
+	onClick,
+}: {
+	to: string;
+	icon: React.ReactNode;
+	label: string;
+	isActive: boolean;
+	onClick?: () => void;
+}) {
+	return (
+		<RouterLink
+			to={to}
+			onClick={onClick}
+			className={`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
+				isActive
+					? "bg-kumo-fill font-semibold text-kumo-default"
+					: "text-kumo-strong hover:bg-kumo-tint"
+			}`}
+		>
+			<span className="shrink-0">{icon}</span>
+			<span className="truncate flex-1">{label}</span>
+		</RouterLink>
+	);
+}
+
 export default function Sidebar() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
+	const location = useLocation();
+	const isAllMail = location.pathname.startsWith("/all/");
+	const currentPathAndSearch = `${location.pathname}${location.search}`;
 	const navigate = useNavigate();
-	const { data: folders = [] } = useFolders(mailboxId);
+	const { data: folders = [] } = useFolders(isAllMail ? undefined : mailboxId);
 	const createFolderMutation = useCreateFolder();
 	const { startCompose, closeSidebar } = useUIStore();
 	const { data: currentMailbox } = useMailbox(mailboxId);
+	const { data: mailboxes = [] } = useMailboxes();
 	const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
 	const [newFolderName, setNewFolderName] = useState("");
 
@@ -96,7 +133,7 @@ export default function Sidebar() {
 
 	const handleCreateFolder = (e: React.FormEvent) => {
 		e.preventDefault();
-		if (newFolderName.trim() && mailboxId) {
+		if (!isAllMail && newFolderName.trim() && mailboxId) {
 			createFolderMutation.mutate({ mailboxId, name: newFolderName.trim() });
 			setNewFolderName("");
 			setIsCreateFolderOpen(false);
@@ -104,6 +141,7 @@ export default function Sidebar() {
 	};
 
 	const displayName = useMemo(() => {
+		if (isAllMail) return "All inboxes";
 		if (!currentMailbox) return mailboxId?.split("@")[0] || "Mailbox";
 		// Prefer settings.fromName > name > local part of email
 		if (currentMailbox.settings?.fromName) {
@@ -113,12 +151,25 @@ export default function Sidebar() {
 			return currentMailbox.name;
 		}
 		return currentMailbox.email.split("@")[0] || currentMailbox.name;
-	}, [currentMailbox, mailboxId]);
+	}, [currentMailbox, isAllMail, mailboxId]);
 
 	const handleNavClick = () => {
 		// Close mobile sidebar on navigation
 		closeSidebar();
 	};
+
+	const inboxBasePath = isAllMail
+		? `/all/emails/${Folders.INBOX}`
+		: `/mailbox/${mailboxId}/emails/${Folders.INBOX}`;
+	const allMailDomain = isAllMail ? new URLSearchParams(location.search).get("domain") : null;
+	const viewPath = (status: "unread" | "starred") => {
+		const params = new URLSearchParams();
+		if (allMailDomain) params.set("domain", allMailDomain);
+		params.set("status", status);
+		return `${inboxBasePath}?${params.toString()}`;
+	};
+	const unreadPath = viewPath("unread");
+	const starredPath = viewPath("starred");
 
 	return (
 		<aside className="h-full w-64 bg-kumo-recessed flex flex-col shrink-0 border-r border-kumo-line">
@@ -140,13 +191,15 @@ export default function Sidebar() {
 						{displayName}
 					</div>
 					<div className="text-sm text-kumo-subtle truncate mt-0.5">
-						{currentMailbox?.email || mailboxId}
+						{isAllMail
+							? `${mailboxes.length} mailbox${mailboxes.length === 1 ? "" : "es"}`
+							: currentMailbox?.email || mailboxId}
 					</div>
 				</div>
 			</div>
 
 			{/* Compose */}
-			<div className="px-3 py-3">
+			{!isAllMail && <div className="px-3 py-3">
 				<Button
 					variant="primary"
 					icon={<PencilSimpleIcon size={16} />}
@@ -155,23 +208,43 @@ export default function Sidebar() {
 				>
 					Compose
 				</Button>
-			</div>
+			</div>}
 
 			{/* Navigation */}
 			<nav className="flex-1 overflow-y-auto px-2 space-y-0.5">
+				<div className="pb-3">
+					<div className="px-3 mb-1.5 text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
+						Views
+					</div>
+					<ViewLink
+						to={unreadPath}
+						icon={<EnvelopeOpenIcon size={18} weight="regular" />}
+						label="Unread"
+						isActive={currentPathAndSearch === unreadPath}
+						onClick={handleNavClick}
+					/>
+					<ViewLink
+						to={starredPath}
+						icon={<StarIcon size={18} weight="regular" />}
+						label="Starred"
+						isActive={currentPathAndSearch === starredPath}
+						onClick={handleNavClick}
+					/>
+				</div>
+
 				{SYSTEM_FOLDER_LINKS.map((folder) => (
 					<FolderLink
 						key={folder.id}
-						to={`/mailbox/${mailboxId}/emails/${folder.id}`}
+						to={isAllMail ? `/all/emails/${folder.id}` : `/mailbox/${mailboxId}/emails/${folder.id}`}
 						icon={FOLDER_ICONS[folder.id]}
 						label={folder.label}
-						unreadCount={getUnreadCount(folder.id)}
+						unreadCount={isAllMail ? undefined : getUnreadCount(folder.id)}
 						onClick={handleNavClick}
 					/>
 				))}
 
 				{/* Custom folders */}
-				{customFolders.length > 0 && (
+				{!isAllMail && customFolders.length > 0 && (
 					<div className="pt-5">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">
@@ -202,7 +275,7 @@ export default function Sidebar() {
 				)}
 
 				{/* Add folder button when no custom folders */}
-				{customFolders.length === 0 && (
+				{!isAllMail && customFolders.length === 0 && (
 					<div className="pt-5">
 						<div className="flex items-center justify-between px-3 mb-1.5">
 							<span className="text-xs uppercase tracking-wider font-semibold text-kumo-subtle">

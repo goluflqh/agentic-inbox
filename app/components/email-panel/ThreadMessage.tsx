@@ -13,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
+import EmailQuickActions from "~/components/EmailQuickActions";
 import {
 	formatDetailDate,
 	formatShortDate,
@@ -155,6 +156,7 @@ export default function ThreadMessage({
 						</button>
 					</div>
 				</div>
+				<EmailQuickActions email={email} className="mb-3 md:ml-[42px]" />
 
 				<div className="md:ml-[42px]">
 					<EmailIframe

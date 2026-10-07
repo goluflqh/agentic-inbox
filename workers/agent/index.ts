@@ -87,6 +87,14 @@ You can ONLY draft emails. You do NOT have the ability to send emails directly.
 ## Draft Management
 Use discard_draft to delete drafts that the operator rejects or that are no longer needed.`;
 
+const INTERACTIVE_CHAT_INSTRUCTIONS = `## Interactive Chat Mode
+These instructions apply when the operator is chatting with you directly. They override the auto-draft-only rules above for normal chat turns.
+
+- After using a tool, always answer the operator in the chat.
+- For list_emails or search_emails results, summarize the matching messages with sender, subject, and date when available.
+- If no messages are found, say that plainly.
+- Only stay silent when handling an automatic new-email draft trigger or when the operator explicitly asks for no commentary.`;
+
 /**
  * Fetch the custom system prompt for a mailbox from its R2 settings.
  * Falls back to DEFAULT_SYSTEM_PROMPT if none is configured.
@@ -273,19 +281,21 @@ function createEmailTools(env: Env, mailboxId: string) {
 // SEND_EMAIL binding shape and the AIChatAgent constraint.  The actual env
 // is fully typed inside the tools via the closure.
 export class EmailAgent extends AIChatAgent<any> {
-	async onChatMessage(onFinish: any) {
+	async onChatMessage(onFinish: any, options?: { abortSignal?: AbortSignal }) {
 		const env = this.env as Env;
 		const mailboxId = this.name;
 		const workersai = createWorkersAI({ binding: env.AI });
 		const tools = createEmailTools(env, mailboxId);
 		const systemPrompt = await getSystemPrompt(env, mailboxId);
+		const chatSystemPrompt = `${systemPrompt}\n\n${INTERACTIVE_CHAT_INSTRUCTIONS}`;
 
 		const result = streamText({
 			model: workersai("@cf/moonshotai/kimi-k2.5"),
-			system: systemPrompt,
+			system: chatSystemPrompt,
 			messages: await convertToModelMessages(this.messages),
 			tools,
 			stopWhen: stepCountIs(5),
+			abortSignal: options?.abortSignal,
 			onFinish,
 		});
 

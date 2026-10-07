@@ -9,8 +9,11 @@ import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
+	build: {
+		target: "esnext",
+	},
   plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    cloudflare({ viteEnvironment: { name: "ssr" }, remoteBindings: true }),
     tailwindcss(),
     reactRouter(),
     tsconfigPaths(),

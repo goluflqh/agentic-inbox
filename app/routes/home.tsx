@@ -8,11 +8,19 @@ import {
 	Empty,
 	Input,
 	Loader,
+	Pagination,
 	Select,
 	Text,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
-import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import {
+	EnvelopeIcon,
+	EnvelopeOpenIcon,
+	GlobeHemisphereWestIcon,
+	PlusIcon,
+	StarIcon,
+	TrashIcon,
+} from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link as RouterLink } from "react-router";
@@ -23,6 +31,8 @@ import {
 	useMailboxes,
 } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
+
+const MAILBOX_PAGE_SIZE = 10;
 
 export function meta() {
 	return [{ title: "Agentic Inbox" }];
@@ -47,6 +57,9 @@ export default function HomeRoute() {
 	const [newPrefix, setNewPrefix] = useState("");
 	const [selectedDomain, setSelectedDomain] = useState("");
 	const [newName, setNewName] = useState("");
+	const [domainFilter, setDomainFilter] = useState("all");
+	const [mailboxSearch, setMailboxSearch] = useState("");
+	const [mailboxPage, setMailboxPage] = useState(1);
 	const [isCreating, setIsCreating] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
 	const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -129,15 +142,60 @@ export default function HomeRoute() {
 	};
 
 	const isConfigured = emailAddresses.length > 0;
+	const mailboxByEmail = new Map(
+		mailboxes.map((mailbox) => [mailbox.email.toLowerCase(), mailbox]),
+	);
 	const accounts = isConfigured
 		? emailAddresses.map((addr) => ({
 				id: addr,
 				email: addr,
 				name: addr.split("@")[0] || addr,
+				unreadCount: mailboxByEmail.get(addr.toLowerCase())?.unreadCount ?? 0,
+				inboxCount: mailboxByEmail.get(addr.toLowerCase())?.inboxCount ?? 0,
 			}))
 		: mailboxes;
+	const filteredAccounts = domainFilter === "all"
+		? accounts
+		: accounts.filter((account) => account.email.toLowerCase().endsWith(`@${domainFilter}`));
+	const searchedAccounts = mailboxSearch.trim()
+		? filteredAccounts.filter((account) => {
+				const query = mailboxSearch.trim().toLowerCase();
+				return account.email.toLowerCase().includes(query) || account.name.toLowerCase().includes(query);
+			})
+		: filteredAccounts;
+	const visibleAccounts = searchedAccounts.slice(
+		(mailboxPage - 1) * MAILBOX_PAGE_SIZE,
+		mailboxPage * MAILBOX_PAGE_SIZE,
+	);
+	const totalUnreadCount = searchedAccounts.reduce(
+		(sum, account) => sum + (account.unreadCount ?? 0),
+		0,
+	);
+	const totalInboxCount = searchedAccounts.reduce(
+		(sum, account) => sum + (account.inboxCount ?? 0),
+		0,
+	);
 
 	const isLoading = !configData;
+
+	useEffect(() => {
+		setMailboxPage(1);
+	}, [domainFilter, mailboxSearch]);
+
+	const mailboxSummary = (unreadCount = 0, inboxCount = 0) => {
+		if (unreadCount > 0) {
+			return `${unreadCount} unread - ${inboxCount} conversation${inboxCount === 1 ? "" : "s"}`;
+		}
+		return `${inboxCount} conversation${inboxCount === 1 ? "" : "s"}`;
+	};
+
+	const allInboxLink = (status?: "unread" | "starred") => {
+		const params = new URLSearchParams();
+		if (domainFilter !== "all") params.set("domain", domainFilter);
+		if (status) params.set("status", status);
+		const query = params.toString();
+		return `/all/emails/inbox${query ? `?${query}` : ""}`;
+	};
 
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
@@ -160,15 +218,93 @@ export default function HomeRoute() {
 							{domains.join(", ")}
 						</p>
 					)}
+					<div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
+						<Input
+							aria-label="Search mailboxes"
+							placeholder="Search mailboxes"
+							size="sm"
+							value={mailboxSearch}
+							onChange={(event) => setMailboxSearch(event.target.value)}
+						/>
+						{domains.length > 1 && (
+							<Select
+								aria-label="Domain filter"
+								value={domainFilter}
+								onValueChange={(value) => {
+									if (value) setDomainFilter(value);
+								}}
+							>
+								<Select.Option value="all">All domains</Select.Option>
+								{domains.map((domainName) => (
+									<Select.Option key={domainName} value={domainName.toLowerCase()}>
+										{domainName}
+									</Select.Option>
+								))}
+							</Select>
+						)}
+					</div>
 				</div>
 
 				{isLoading ? (
 					<div className="flex justify-center py-20">
 						<Loader size="lg" />
 					</div>
-				) : accounts.length > 0 ? (
-					<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-						{accounts.map((account, idx) => (
+				) : searchedAccounts.length > 0 ? (
+					<div className="space-y-3">
+						<RouterLink
+							to={allInboxLink()}
+							className="group flex items-center gap-4 rounded-xl border border-kumo-line bg-kumo-base px-5 py-4 no-underline transition-colors hover:bg-kumo-tint"
+						>
+							<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
+								<EnvelopeIcon size={20} />
+							</div>
+							<div className="min-w-0 flex-1">
+								<div className="text-sm font-semibold text-kumo-default truncate">
+									{domainFilter === "all" ? "All inboxes" : domainFilter}
+								</div>
+								<div className="text-sm text-kumo-subtle">
+									{searchedAccounts.length} mailbox{searchedAccounts.length === 1 ? "" : "es"} - {mailboxSummary(totalUnreadCount, totalInboxCount)}
+								</div>
+							</div>
+							{totalUnreadCount > 0 && (
+								<div className="rounded-full bg-kumo-brand px-2 py-0.5 text-xs font-semibold text-white">
+									{totalUnreadCount}
+								</div>
+							)}
+						</RouterLink>
+						<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+							<RouterLink
+								to={allInboxLink("unread")}
+								className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 no-underline transition-colors hover:bg-kumo-tint"
+							>
+								<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
+									<EnvelopeOpenIcon size={18} />
+								</div>
+								<div className="min-w-0 flex-1">
+									<div className="text-sm font-semibold text-kumo-default">Unread</div>
+									<div className="text-xs text-kumo-subtle">Needs attention</div>
+								</div>
+								{totalUnreadCount > 0 && (
+									<div className="rounded-full bg-kumo-brand px-2 py-0.5 text-xs font-semibold text-white">
+										{totalUnreadCount}
+									</div>
+								)}
+							</RouterLink>
+							<RouterLink
+								to={allInboxLink("starred")}
+								className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 no-underline transition-colors hover:bg-kumo-tint"
+							>
+								<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-warning">
+									<StarIcon size={18} weight="fill" />
+								</div>
+								<div className="min-w-0 flex-1">
+									<div className="text-sm font-semibold text-kumo-default">Starred</div>
+									<div className="text-xs text-kumo-subtle">Pinned conversations</div>
+								</div>
+							</RouterLink>
+						</div>
+						<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
+						{visibleAccounts.map((account, idx) => (
 							<RouterLink
 								key={account.id}
 								to={`/mailbox/${account.id}`}
@@ -186,7 +322,15 @@ export default function HomeRoute() {
 									<div className="text-sm text-kumo-subtle">
 										{account.email}
 									</div>
+									<div className="mt-0.5 text-xs text-kumo-subtle">
+										{mailboxSummary(account.unreadCount, account.inboxCount)}
+									</div>
 								</div>
+								{(account.unreadCount ?? 0) > 0 && (
+									<div className="rounded-full bg-kumo-brand px-2 py-0.5 text-xs font-semibold text-white">
+										{account.unreadCount}
+									</div>
+								)}
 								{!isConfigured && (
 									<Button
 										variant="ghost"
@@ -207,16 +351,35 @@ export default function HomeRoute() {
 								)}
 							</RouterLink>
 						))}
+						</div>
+						{searchedAccounts.length > MAILBOX_PAGE_SIZE && (
+							<div className="flex justify-center py-2">
+								<Pagination
+									page={mailboxPage}
+									setPage={setMailboxPage}
+									perPage={MAILBOX_PAGE_SIZE}
+									totalCount={searchedAccounts.length}
+								/>
+							</div>
+						)}
 					</div>
 				) : (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">
 						<div className="flex flex-col items-center text-center">
 							<div className="mb-4">
-								<EnvelopeIcon
-									size={48}
-									weight="thin"
-									className="text-kumo-subtle"
-								/>
+								{domainFilter === "all" ? (
+									<EnvelopeIcon
+										size={48}
+										weight="thin"
+										className="text-kumo-subtle"
+									/>
+								) : (
+									<GlobeHemisphereWestIcon
+										size={48}
+										weight="thin"
+										className="text-kumo-subtle"
+									/>
+								)}
 							</div>
 							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
 								No mailboxes yet

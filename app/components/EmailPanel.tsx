@@ -29,8 +29,18 @@ function EmailPanelSkeleton() {
 	);
 }
 
-export default function EmailPanel({ emailId }: { emailId: string }) {
-	const { mailboxId, folder } = useParams<{ mailboxId: string; folder: string }>();
+export default function EmailPanel({
+	emailId,
+	mailboxIdOverride,
+	folderOverride,
+}: {
+	emailId: string;
+	mailboxIdOverride?: string;
+	folderOverride?: string;
+}) {
+	const { mailboxId: routeMailboxId, folder: routeFolder } = useParams<{ mailboxId: string; folder: string }>();
+	const mailboxId = mailboxIdOverride || routeMailboxId;
+	const folder = folderOverride || routeFolder;
 	const { data: email } = useEmail(mailboxId, emailId) as { data?: Email };
 	const { data: threadRepliesRaw } = useThreadReplies(mailboxId, email?.thread_id) as {
 		data?: Email[];
