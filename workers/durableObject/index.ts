@@ -738,11 +738,9 @@ export class MailboxDO extends DurableObject<Env> {
 		};
 
 		if (query) {
-			const p1 = addParam(`%${query}%`);
-			const p2 = addParam(`%${query}%`);
-			const p3 = addParam(`%${query}%`);
-			const p4 = addParam(`%${query}%`);
-			conditions.push(`(${prefix}subject LIKE ${p1} OR ${prefix}body LIKE ${p2} OR ${prefix}sender LIKE ${p3} OR ${prefix}recipient LIKE ${p4} OR ${prefix}cc LIKE ${p4} OR ${prefix}bcc LIKE ${p4})`);
+			const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+			const p = addParam(pattern);
+			conditions.push(`(${prefix}subject LIKE ${p} ESCAPE '\\' OR ${prefix}body LIKE ${p} ESCAPE '\\' OR ${prefix}sender LIKE ${p} ESCAPE '\\' OR ${prefix}recipient LIKE ${p} ESCAPE '\\' OR ${prefix}cc LIKE ${p} ESCAPE '\\' OR ${prefix}bcc LIKE ${p} ESCAPE '\\')`);
 		}
 		if (folder) {
 			const p = addParam(folder);
@@ -760,9 +758,31 @@ export class MailboxDO extends DurableObject<Env> {
 		return { conditions, params };
 	}
 
+	#visibleSearchRows(options: SearchFilterOptions, start: number, limit: number) {
+		const { conditions, params } = this.#buildSearchConditions(options, "e");
+		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+		const rows: any[] = [];
+		let count = 0;
+		for (let offset = 0; ; offset += 100) {
+			const batch = [...this.ctx.storage.sql.exec(`SELECT e.*, f.name as folder_name FROM emails e LEFT JOIN folders f ON e.folder_id = f.id ${where} ORDER BY e.date DESC, e.id DESC LIMIT 100 OFFSET ?${params.length + 1}`, ...params, offset)] as any[];
+			for (const row of batch) {
+				const match = searchMatch(row.subject || "", row.body || "", row.sender || "", [row.recipient, row.cc, row.bcc].filter(Boolean).join(" "), options.query);
+				if (!match.fields.length) continue;
+				if (count >= start && rows.length < limit) {
+					const { body, raw_headers, ...email } = row;
+					rows.push({ ...email, snippet: (body || "").slice(0, 300), read: !!row.read, starred: !!row.starred, match_fields: match.fields, match_excerpt: match.excerpt });
+				}
+				count++;
+			}
+			if (batch.length < 100) break;
+		}
+		return { rows, count };
+	}
+
 	async searchEmails(options: SearchFilterOptions & { page?: number; limit?: number }) {
 		const { page = 1, limit: rawLimit = 25 } = options;
 		const limit = Math.min(Math.max(rawLimit, 1), 100);
+		if (options.query) return this.#visibleSearchRows(options, (page - 1) * limit, limit).rows;
 		const { conditions, params } = this.#buildSearchConditions(options, "e");
 
 		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -792,6 +812,7 @@ export class MailboxDO extends DurableObject<Env> {
 	 * Count total search results matching the given filters (for pagination).
 	 */
 	async countSearchResults(options: SearchFilterOptions) {
+		if (options.query) return this.#visibleSearchRows(options, 0, 0).count;
 		const { conditions, params } = this.#buildSearchConditions(options);
 
 		const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
