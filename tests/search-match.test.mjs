@@ -8,6 +8,6 @@ test('identifies subject and body and shows a later body match', () => {
   assert.match(result.excerpt, /key end/);
   assert.doesNotMatch(result.excerpt, /<p>/);
 });
-test('does not label hidden markup as visible body', () => {
-  assert.deepEqual(searchMatch('', '<style>.secret{}</style><p>hello</p>', '', '', 'secret').fields, []);
+test('labels hidden markup separately from visible body', () => {
+  assert.deepEqual(searchMatch('', '<style>.secret{}</style><p>hello</p>', '', '', 'secret').fields, ['Hidden HTML / link']);
 });

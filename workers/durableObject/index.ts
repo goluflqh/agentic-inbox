@@ -759,7 +759,7 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	#visibleSearchRows(options: SearchFilterOptions, start: number, limit: number) {
-		const { conditions, params } = this.#buildSearchConditions(options, "e");
+		const { conditions, params } = this.#buildSearchConditions({ ...options, query: "" }, "e");
 		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 		const rows: any[] = [];
 		let count = 0;
