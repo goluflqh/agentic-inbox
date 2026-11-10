@@ -17,6 +17,10 @@ Record these before changing anything:
 
 - Domain
 - Desired mailbox and display name
+- Required API keys check (UPFRONT):
+  - `CLOUDFLARE_API_TOKEN` (must include `Zone:Edit`, `DNS:Edit`, `Email Routing:Edit`)
+  - Outbound API key: `RESEND_API_KEY` or `SMTP2GO_API_KEY`
+  - **Rule**: If any key is missing or lacks required permissions, alert the user immediately at step 1 so they can provide/update it, enabling 100% automated API execution without manual dashboard intervention.
 - Current authoritative nameservers
 - Current website A/AAAA/CNAME records and HTTP status
 - Existing MX, SPF, DKIM, DMARC, CAA, and DNSSEC/DS records
