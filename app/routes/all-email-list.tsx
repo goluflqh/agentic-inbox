@@ -21,8 +21,10 @@ import { useParams, useSearchParams } from "react-router";
 import { formatListDate } from "shared/dates";
 import { Folders } from "shared/folders";
 import EmailQuickActions from "~/components/EmailQuickActions";
+import { highlightSearch, SearchMatchLabel } from "~/components/SearchMatch";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { useUIStore } from "~/hooks/useUIStore";
+import { localDateBounds } from "~/lib/date-range";
 import { getSnippetText } from "~/lib/utils";
 import {
 	useAllEmails,
@@ -117,9 +119,17 @@ export default function AllEmailListRoute() {
 		selectEmail,
 		closePanel,
 	} = useUIStore();
-	const [page, setPage] = useState(1);
 	const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+	const [selectedMailbox, setSelectedMailbox] = useState<{ id: string; mailboxId: string } | null>(null);
 	const [searchParams, setSearchParams] = useSearchParams();
+	const pageValue = Number(searchParams.get("page"));
+	const page = Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+	const setPage = (nextPage: number) => {
+		const params = new URLSearchParams(searchParams);
+		if (nextPage <= 1) params.delete("page");
+		else params.set("page", String(nextPage));
+		setSearchParams(params);
+	};
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
 	const markThreadRead = useMarkThreadRead();
@@ -134,23 +144,31 @@ export default function AllEmailListRoute() {
 	const statusParam = searchParams.get("status");
 	const status = statusParam === "unread" || statusParam === "starred" ? statusParam : "all";
 	const q = searchParams.get("q") || "";
+	const dateFrom = searchParams.get("from_date") || "";
+	const dateTo = searchParams.get("to_date") || "";
+	const dateBounds = localDateBounds(dateFrom, dateTo);
 	const [searchInput, setSearchInput] = useState(q);
 
 	useEffect(() => {
 		setSearchInput(q);
 	}, [q]);
 
-	const setFilter = (next: { domain?: string; status?: "all" | "unread" | "starred"; q?: string }) => {
+	const setFilter = (next: { domain?: string; status?: "all" | "unread" | "starred"; q?: string; fromDate?: string; toDate?: string }) => {
 		const params = new URLSearchParams(searchParams);
 		const nextDomain = next.domain ?? domain;
 		const nextStatus = next.status ?? status;
 		const nextQ = next.q ?? q;
+		params.delete("page");
 		if (nextDomain === "all") params.delete("domain");
 		else params.set("domain", nextDomain);
 		if (nextStatus === "all") params.delete("status");
 		else params.set("status", nextStatus);
 		if (nextQ.trim()) params.set("q", nextQ.trim());
 		else params.delete("q");
+		for (const [key, value] of [["from_date", next.fromDate], ["to_date", next.toDate]] as const) {
+			if (value === undefined) continue;
+			if (value) params.set(key, value); else params.delete(key);
+		}
 		setSearchParams(params);
 	};
 
@@ -168,31 +186,34 @@ export default function AllEmailListRoute() {
 		if (domain !== "all") next.domain = domain;
 		if (status !== "all") next.status = status;
 		if (q) next.q = q;
+		if (dateBounds?.start) next.date_start = dateBounds.start;
+		if (dateBounds?.end) next.date_end = dateBounds.end;
 		return next;
-	}, [domain, folder, page, q, status]);
+	}, [domain, folder, page, q, status, dateFrom, dateTo]);
 
-	const { data: emailData, isFetching: isRefreshing } = useAllEmails(params, {
+	const { data: emailData, isFetching: isRefreshing, isError } = useAllEmails(params, {
+		enabled: dateBounds !== null,
 		refetchInterval: 30_000,
 	});
 	const emails = emailData?.emails ?? [];
 	const totalCount = emailData?.totalCount ?? 0;
 	const selectedEmail = emails.find((email) => email.id === selectedEmailId);
-	const panelMailboxId = selectedEmail?.mailbox_id;
+	const panelMailboxId = selectedEmail?.mailbox_id ?? (selectedMailbox?.id === selectedEmailId ? selectedMailbox.mailboxId : undefined);
 	const folderName = folder ? FOLDER_LABELS[folder] || folder : "Inbox";
 	const statusName = status === "unread" ? "Unread" : status === "starred" ? "Starred" : "All";
 	const title = status === "all" ? `All ${folderName.toLowerCase()}` : `${statusName} ${folderName.toLowerCase()}`;
 	const isPanelOpen = selectedEmailId !== null || isComposing;
-	const prevFolderRef = useRef<string | undefined>(undefined);
+	const prevFolderRef = useRef(`${folder}/${domain}/${status}/${q}/${dateFrom}/${dateTo}`);
 
 	useEffect(() => {
-		const folderChanged = prevFolderRef.current !== `${folder}/${domain}/${status}/${q}`;
-		prevFolderRef.current = `${folder}/${domain}/${status}/${q}`;
+		const folderChanged = prevFolderRef.current !== `${folder}/${domain}/${status}/${q}/${dateFrom}/${dateTo}`;
+		prevFolderRef.current = `${folder}/${domain}/${status}/${q}/${dateFrom}/${dateTo}`;
 		if (folderChanged) {
 			closePanel();
-			setPage(1);
+			setSelectedMailbox(null);
 			setSelectedKeys(new Set());
 		}
-	}, [closePanel, domain, folder, q, status]);
+	}, [closePanel, domain, folder, q, status, dateFrom, dateTo]);
 
 	useEffect(() => {
 		const visibleKeys = new Set(emails.map(emailSelectionKey));
@@ -244,6 +265,7 @@ export default function AllEmailListRoute() {
 	};
 
 	const handleRowClick = (email: Email) => {
+		if (email.mailbox_id) setSelectedMailbox({ id: email.id, mailboxId: email.mailbox_id });
 		selectEmail(email.id);
 		const mailboxId = email.mailbox_id;
 		if (!mailboxId || !hasUnread(email)) return;
@@ -313,6 +335,13 @@ export default function AllEmailListRoute() {
 						</Button>
 					)}
 				</form>
+				<div className="flex flex-wrap items-end gap-3 text-sm">
+					<label className="flex flex-col gap-1">From date <input type="date" value={dateFrom} onChange={(event) => setFilter({ fromDate: event.target.value })} className="rounded-md border border-kumo-line bg-kumo-base px-2 py-1" /></label>
+					<label className="flex flex-col gap-1">Through date <input type="date" value={dateTo} onChange={(event) => setFilter({ toDate: event.target.value })} className="rounded-md border border-kumo-line bg-kumo-base px-2 py-1" /></label>
+					{(dateFrom || dateTo) && <Button type="button" variant="ghost" size="sm" onClick={() => setFilter({ fromDate: "", toDate: "" })}>Clear dates</Button>}
+				</div>
+				<p className="text-xs text-kumo-subtle">Dates use your device's local time. Date filtering lists individual messages.</p>
+				{!dateBounds && <p role="alert" className="text-sm text-kumo-destructive">Choose a valid date range; the start must not be after the end.</p>}
 				<div className="flex flex-wrap items-center gap-2 shrink-0">
 					<div className="flex rounded-md border border-kumo-line bg-kumo-base p-0.5">
 						{(["all", "unread", "starred"] as const).map((item) => (
@@ -400,13 +429,15 @@ export default function AllEmailListRoute() {
 			</div>
 
 			<div className="flex-1 overflow-y-auto">
-				{isRefreshing && emails.length === 0 ? (
+				{!dateBounds ? null : isRefreshing && emails.length === 0 ? (
 					<AllEmailListSkeleton />
+				) : isError ? (
+					<div role="alert" className="px-5 py-8 text-sm text-kumo-subtle">Unable to load emails. Refresh or narrow your search.</div>
 				) : emails.length > 0 ? (
 					<div>
 						{emails.map((email) => {
 							const isSelected = selectedEmailId === email.id;
-							const snippet = getSnippetText(email.snippet);
+							const snippet = email.match_excerpt || getSnippetText(email.snippet);
 							return (
 								<div
 									key={`${email.mailbox_id}:${email.id}`}
@@ -473,10 +504,11 @@ export default function AllEmailListRoute() {
 										</div>
 										<div className="truncate text-sm mt-0.5">
 											<span className={hasUnread(email) ? "font-medium text-kumo-default" : "text-kumo-subtle"}>
-												{email.subject}
+												{highlightSearch(email.subject, q)}
 											</span>
-											{snippet && <span className="text-kumo-subtle font-normal"> &mdash; {snippet}</span>}
+											{snippet && <span className="text-kumo-subtle font-normal"> &mdash; {highlightSearch(snippet, q)}</span>}
 										</div>
+										<SearchMatchLabel fields={email.match_fields} />
 										<EmailQuickActions
 											email={email}
 											compact
@@ -526,13 +558,14 @@ export default function AllEmailListRoute() {
 			</div>
 
 			{totalCount > PAGE_SIZE && (
-				<div className="flex justify-center py-3 border-t border-kumo-line shrink-0">
+				<div className="flex flex-col items-center gap-1 py-3 border-t border-kumo-line shrink-0">
 					<Pagination
 						page={page}
 						setPage={setPage}
 						perPage={PAGE_SIZE}
-						totalCount={totalCount}
+						totalCount={Math.min(totalCount, 1000)}
 					/>
+					{totalCount > 1000 && <span className="text-xs text-kumo-subtle">Showing the first 1,000 results. Narrow your search to see more.</span>}
 				</div>
 			)}
 		</MailboxSplitView>

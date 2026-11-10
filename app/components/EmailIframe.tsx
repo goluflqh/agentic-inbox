@@ -42,9 +42,10 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 				typeof event.data === "object" &&
 				event.data.__emailIframeHeight &&
 				typeof event.data.height === "number" &&
+				Number.isFinite(event.data.height) &&
 				event.data.height > 0
 			) {
-				setHeight(event.data.height);
+				setHeight(Math.min(event.data.height, 100_000));
 			}
 		},
 		[autoSize],
@@ -59,12 +60,26 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 		const iframe = iframeRef.current;
 		if (!iframe || !body) return;
 
-		const cleanBody = DOMPurify.sanitize(body, {
+		const fragment = DOMPurify.sanitize(body, {
 			USE_PROFILES: { html: true },
-			FORBID_TAGS: ["style"],
-			ADD_ATTR: ["target"],
+			ADD_TAGS: ["style"],
+			FORBID_TAGS: ["form", "base"],
 			FORCE_BODY: true,
+			RETURN_DOM_FRAGMENT: true,
 		});
+		for (const link of fragment.querySelectorAll("a[href]")) {
+			try {
+				const url = new URL(link.getAttribute("href") || "");
+				if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Unsupported link");
+				link.setAttribute("target", "_blank");
+				link.setAttribute("rel", "noopener noreferrer");
+			} catch {
+				link.removeAttribute("href");
+			}
+		}
+		const container = document.createElement("div");
+		container.appendChild(fragment);
+		const cleanBody = container.innerHTML;
 
 		const padding = autoSize ? "0" : "24px";
 
@@ -81,6 +96,8 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 				setTimeout(reportHeight, 50);
 				setTimeout(reportHeight, 150);
 				setTimeout(reportHeight, 400);
+				window.addEventListener("load", reportHeight);
+				new ResizeObserver(reportHeight).observe(document.body);
 			<\/script>`
 			: "";
 
@@ -91,7 +108,7 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https:; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https: ${window.location.origin}; script-src 'unsafe-inline';">
 <style>
 * { box-sizing: border-box; }
 html {
@@ -144,7 +161,7 @@ ul, ol { padding-left: 20px; margin: 4px 0; }
 			ref={iframeRef}
 			className="block w-full border-0"
 			style={autoSize ? { height: `${height}px` } : { height: "100%" }}
-			sandbox="allow-scripts allow-popups allow-top-navigation-by-user-activation"
+			sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
 			title="Email content"
 		/>
 	);

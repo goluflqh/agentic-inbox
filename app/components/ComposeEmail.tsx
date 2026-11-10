@@ -7,6 +7,7 @@ import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+import ComposeAttachments from "./ComposeAttachments";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function ComposeEmail() {
@@ -30,9 +31,11 @@ export default function ComposeEmail() {
 		setSubject,
 		body,
 		setBody,
+		files, addFiles, removeFile,
 		error,
 		isSavingDraft,
 		isSending,
+		sendAccepted,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
@@ -100,6 +103,7 @@ export default function ComposeEmail() {
 						onChange={(e) => setSubject(e.target.value)}
 						required
 					/>
+					<ComposeAttachments files={files} onAdd={addFiles} onRemove={removeFile} disabled={isSending || isSavingDraft} />
 					<div>
 						<Text size="sm" DANGEROUS_className="font-medium mb-1.5 block">
 							Message
@@ -133,7 +137,7 @@ export default function ComposeEmail() {
 								variant="primary"
 								size="sm"
 								loading={isSending}
-								disabled={isSavingDraft || isSending}
+								disabled={isSavingDraft || isSending || sendAccepted}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
 								{isSending ? "Sending..." : "Send"}

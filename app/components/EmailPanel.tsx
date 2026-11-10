@@ -57,8 +57,10 @@ export default function EmailPanel({
 	const { closePanel, startCompose } = useUIStore();
 	const toastManager = useKumoToastManager();
 	const [isSending, setIsSending] = useState(false);
+	const [acceptedDraftIds, setAcceptedDraftIds] = useState<Set<string>>(new Set());
 	const [sourceViewEmail, setSourceViewEmail] = useState<Email | null>(null);
 	const [expandedMessages, setExpandedMessages] = useState<Set<string>>(new Set());
+	const [showDrafts, setShowDrafts] = useState(false);
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
 	const isDraftFolder = folder === Folders.DRAFT;
 
@@ -75,7 +77,11 @@ export default function EmailPanel({
 	// Reset expanded state only when the selected email changes, not on every refetch.
 	// Using allMessages as a dependency would reset user expand/collapse state on background refetches.
 	const currentEmailId = email?.id;
-	useEffect(() => { if (allMessages.length > 1) setExpandedMessages(new Set([allMessages[0].id])); }, [currentEmailId]); // eslint-disable-line react-hooks/exhaustive-deps
+	useEffect(() => {
+		setShowDrafts(false);
+		const firstVisible = isDraftFolder ? allMessages[0] : allMessages.find((msg) => msg.folder_id !== Folders.DRAFT);
+		if (firstVisible) setExpandedMessages(new Set([firstVisible.id]));
+	}, [currentEmailId]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	const toggleExpand = (msgId: string) => { setExpandedMessages((prev) => { const next = new Set(prev); if (next.has(msgId)) next.delete(msgId); else next.add(msgId); return next; }); };
 
@@ -118,7 +124,7 @@ export default function EmailPanel({
 
 	const handleSendDraft = async (draftMsg?: Email) => {
 		let target = draftMsg || email;
-		if (!mailboxId || !currentMailbox) return;
+		if (!mailboxId || !currentMailbox || acceptedDraftIds.has(target.id)) return;
 		setIsSending(true);
 		try {
 			if (!target.recipient || !target.subject) { try { const fresh = await api.getEmail(mailboxId, target.id) as Email; if (fresh) target = fresh; } catch {} }
@@ -137,8 +143,19 @@ export default function EmailPanel({
 				html: target.body || "",
 				text: target.body ? target.body.replace(/<[^>]*>/g, "").trim() : "",
 			};
-			if (originalEmail) await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }); else await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
-			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });
+			const result = originalEmail ? await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }) : await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
+			if (result.status === "sent_save_failed") {
+				setAcceptedDraftIds((ids) => new Set([...ids, target.id]));
+				toastManager.add({ title: "Provider accepted the email, but the Sent copy failed. Do not resend; check the provider or recipient.", variant: "error" });
+				return;
+			}
+			setAcceptedDraftIds((ids) => new Set([...ids, target.id]));
+			try {
+				await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });
+			} catch {
+				toastManager.add({ title: "Email was sent, but its draft could not be removed. Do not resend it.", variant: "error" });
+				return;
+			}
 			toastManager.add({ title: "Email sent!" });
 			if (isDraftFolder) closePanel();
 		} catch (err) {
@@ -147,6 +164,8 @@ export default function EmailPanel({
 		} finally { setIsSending(false); }
 	};
 
+	const hiddenDraftCount = isDraftFolder ? 0 : allMessages.filter((msg) => draftMessageIds.has(msg.id)).length;
+	const visibleMessages = !isDraftFolder && !showDrafts ? allMessages.filter((msg) => !draftMessageIds.has(msg.id)) : allMessages;
 	const hasThread = allMessages.length > 1;
 
 	return (
@@ -192,8 +211,11 @@ export default function EmailPanel({
 			/>
 
 			<div className="flex-1 overflow-y-auto">
+				{hiddenDraftCount > 0 && <div className="px-4 py-2 border-b border-kumo-line text-sm text-kumo-subtle">
+					{hiddenDraftCount} draft{hiddenDraftCount === 1 ? "" : "s"} {showDrafts ? "shown" : "hidden"}. <button type="button" className="text-kumo-link underline" onClick={() => setShowDrafts(!showDrafts)}>{showDrafts ? "Hide drafts" : "Show drafts"}</button>
+				</div>}
 				{hasThread ? (
-					allMessages.map((msg, idx) => {
+					visibleMessages.map((msg, idx) => {
 						const isDraft = draftMessageIds.has(msg.id);
 						return (
 							<ThreadMessage
@@ -201,7 +223,7 @@ export default function EmailPanel({
 								email={msg}
 								mailboxId={mailboxId}
 								mailboxEmail={currentMailbox?.email}
-								isLast={idx === allMessages.length - 1}
+								isLast={idx === visibleMessages.length - 1}
 								isDraft={isDraft}
 								isSending={isDraft ? isSending : false}
 								isExpanded={expandedMessages.has(msg.id)}

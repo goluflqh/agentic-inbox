@@ -25,9 +25,9 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "quanghuylee.cyou,lequanghuy.dev,realtyscope.bond,minhhongdanang.page",
+		"DOMAINS": "quanghuylee.cyou,lequanghuy.dev,realtyscope.bond,minhhongdanang.page,diplom-master.my.id",
 		"DEFAULT_OUTBOUND_PROVIDER": "resend",
-		"OUTBOUND_PROVIDER_BY_DOMAIN": "quanghuylee.cyou:resend,lequanghuy.dev:smtp2go,realtyscope.bond:cloudflare,minhhongdanang.page:resend",
+		"OUTBOUND_PROVIDER_BY_DOMAIN": "quanghuylee.cyou:resend,lequanghuy.dev:smtp2go,realtyscope.bond:cloudflare,minhhongdanang.page:resend,diplom-master.my.id:smtp2go",
 		"EMAIL_ADDRESSES": []
 	},
 	"send_email": [

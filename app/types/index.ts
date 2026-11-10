@@ -50,6 +50,8 @@ export interface Email {
 	quick_link?: string | null;
 	attachments?: Attachment[];
 	snippet?: string | null;
+	match_fields?: string[];
+	match_excerpt?: string | null;
 	// Thread aggregate fields (only present in threaded list view)
 	thread_count?: number;
 	thread_unread_count?: number;

@@ -309,25 +309,7 @@ export class EmailAgent extends AIChatAgent<any> {
 	async onRequest(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname === "/onNewEmail" && request.method === "POST") {
-			try {
-				const emailData = await request.json() as {
-					mailboxId: string;
-					emailId: string;
-					sender: string;
-					subject: string;
-					threadId: string;
-				};
-				const result = await this.handleNewEmail(emailData);
-				return new Response(JSON.stringify(result), {
-					headers: { "Content-Type": "application/json" },
-				});
-			} catch (e) {
-				console.error("onNewEmail handler failed:", (e as Error).message);
-				return new Response(
-					JSON.stringify({ error: (e as Error).message }),
-					{ status: 500, headers: { "Content-Type": "application/json" } },
-				);
-			}
+			return new Response("Automatic drafts are disabled", { status: 410 });
 		}
 		return super.onRequest(request);
 	}

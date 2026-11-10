@@ -11,6 +11,7 @@
  * Zod schemas: used across route handlers to eliminate duplication.
  */
 import { z } from "zod";
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT, validateAttachmentSizes } from "../../shared/attachment-limits";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -73,13 +74,15 @@ export const SendEmailRequestSchema = z
 		attachments: z
 			.array(
 				z.object({
-					content: z.string(), // base64 encoded
-					filename: z.string(),
-					type: z.string(),
+					content: z.string().max(Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+					filename: z.string().min(1).max(255),
+					type: z.string().min(1).max(255).regex(/^[\x20-\x7e]+$/),
 					disposition: z.enum(["attachment", "inline"]),
 					contentId: z.string().optional(),
 				}),
 			)
+			.max(MAX_ATTACHMENT_COUNT)
+			.refine((files) => !validateAttachmentSizes(files.map((file) => (file.content.length / 4) * 3 - (file.content.endsWith("==") ? 2 : file.content.endsWith("=") ? 1 : 0))), "Attachments must total at most 5 MiB")
 			.optional(),
 		in_reply_to: z.string().optional(),
 		references: z.array(z.string()).optional(),

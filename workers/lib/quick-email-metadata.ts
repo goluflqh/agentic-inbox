@@ -9,12 +9,10 @@ export interface QuickEmailMetadata {
 	quick_link: string | null;
 }
 
-const CODE_CONTEXT =
-	/(verification|security|login|one[-\s]?time|auth(?:entication)?|2fa|otp|passcode|code|verify|m[aã]|x[aá]c minh)/i;
-const CODE_LABEL =
-	"(?:verification|security|login|one[-\\s]?time|auth(?:entication)?|2fa|otp|passcode|code|verify|m[aã]|x[aá]c minh)";
+const CODE_LABEL = "(?:\\b(?:code|passcode|otp)\\b|m[aã])";
+const CODE_VALUE = "(?:\\d{4}[ -]\\d{4}|(?:\\d[ -]){3,7}\\d|\\d{4,8})";
 const QUICK_LINK_POSITIVE =
-	/(verify|verification|confirm|activate|login|signin|sign-in|auth|magic|password|reset|otp|code|token|challenge|account)/i;
+	/(verify|verification|confirm|activate|login|sign[ -]?in|auth|magic|password|reset|otp|token|challenge)/i;
 const QUICK_LINK_NEGATIVE =
 	/(unsubscribe|privacy|terms|preferences|support|help|tracking|pixel|logo|image|avatar|facebook|twitter|linkedin)/i;
 
@@ -53,26 +51,32 @@ function extractAuthCode(input: QuickEmailMetadataInput): string | null {
 	const bodyText = [input.text || "", input.html ? stripHtml(input.html) : ""]
 		.filter(Boolean)
 		.join("\n");
-	const haystack = decodeEntities(`${subject}\n${bodyText}`).slice(0, 40_000);
+	const haystack = decodeEntities(`${subject}\n${bodyText}`)
+		.replace(/https?:\/\/[^\s<>"']+/gi, " ")
+		.slice(0, 40_000);
 	const labeledPatterns = [
-		new RegExp(`${CODE_LABEL}\\D{0,80}(\\d[\\d\\s-]{2,10}\\d)`, "gi"),
-		new RegExp(`(\\d[\\d\\s-]{2,10}\\d)\\D{0,60}${CODE_LABEL}`, "gi"),
+		new RegExp(`${CODE_LABEL}[ \\t]*(?:(?:is|:|=|-)[ \\t]*)?(?:\\n[ \\t]*)?(?<!\\d)(${CODE_VALUE})(?!\\d)`, "gi"),
+		new RegExp(`(?<!\\d)(${CODE_VALUE})(?!\\d)[ \\t]*(?:is[ \\t]+)?(?:your[ \\t]+)?${CODE_LABEL}`, "gi"),
 	];
 
+	const candidates = new Set<string>();
 	for (const pattern of labeledPatterns) {
 		for (const match of haystack.matchAll(pattern)) {
 			const code = normalizeCodeCandidate(match[1] || "");
-			if (code) return code;
+			if (code) candidates.add(code);
 		}
 	}
-
-	for (const match of haystack.matchAll(/(?<!\d)(\d{6})(?!\d)/g)) {
-		const index = match.index || 0;
-		const context = haystack.slice(Math.max(0, index - 80), index + 100);
-		if (CODE_CONTEXT.test(context)) return match[1];
+	// A numeric block is a fallback only in an email explicitly about a code.
+	if (new RegExp(CODE_LABEL, "i").test(`${subject}\n${bodyText.slice(0, 2000)}`)) {
+		const html = (input.html || "").slice(0, 40_000).replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+		for (const match of html.matchAll(/>(?:\s|&nbsp;)*(\d{4,8})(?:\s|&nbsp;)*<\//gi)) candidates.add(match[1]);
+		if (candidates.size === 0) {
+			for (const line of (input.text || "").slice(0, 40_000).split(/\r?\n/)) {
+				if (/^\s*\d{4,8}\s*$/.test(line)) candidates.add(line.trim());
+			}
+		}
 	}
-
-	return null;
+	return candidates.size === 1 ? [...candidates][0] : null;
 }
 
 function cleanUrlCandidate(value: string): string {
@@ -125,13 +129,26 @@ function extractQuickLink(input: QuickEmailMetadataInput): string | null {
 	if (links.length === 0) return null;
 
 	let best: { url: string; score: number } | null = null;
+	const anchorLabels = new Map<string, string>();
+	for (const match of (input.html || "").matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a\s*>/gi)) {
+		const url = normalizeUrl(match[1] || "");
+		if (url) anchorLabels.set(url, stripHtml(match[2] || ""));
+	}
 	for (const url of links) {
-		const score = scoreLink(url);
+		let score = scoreLink(url);
 		if (score < 0) continue;
+		if (QUICK_LINK_POSITIVE.test(anchorLabels.get(url) || "")) score += 20;
+		if (score <= 0) continue;
 		if (!best || score > best.score) best = { url, score };
 	}
 
 	return best?.url || null;
+}
+
+export function metadataFromStoredEmail(subject: string | null | undefined, body: string | null | undefined): QuickEmailMetadata {
+	const value = body || "";
+	const html = value.length > 40_000 ? value.slice(0, 40_000).replace(/\S+$/, "") : value;
+	return extractQuickEmailMetadata({ subject, html });
 }
 
 export function extractQuickEmailMetadata(input: QuickEmailMetadataInput): QuickEmailMetadata {
