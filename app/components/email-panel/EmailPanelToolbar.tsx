@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import {
 	ArrowBendUpLeftIcon,
 	ArrowBendUpRightIcon,
+	ArrowCounterClockwiseIcon,
 	ArrowLeftIcon,
 	ChatCircleIcon,
 	CodeIcon,
@@ -25,6 +26,7 @@ interface EmailPanelToolbarProps {
 	email: Email;
 	mailboxId?: string;
 	isDraftFolder: boolean;
+	isTrashFolder?: boolean;
 	isSending: boolean;
 	moveToFolders: Folder[];
 	lastReceivedMessage?: Email;
@@ -39,12 +41,14 @@ interface EmailPanelToolbarProps {
 	onMove: (folderId: string) => void;
 	onViewSource: () => void;
 	onDelete: () => void;
+	onRestore?: () => void;
 }
 
 export default function EmailPanelToolbar({
 	email,
 	mailboxId,
 	isDraftFolder,
+	isTrashFolder = false,
 	isSending,
 	moveToFolders,
 	onBack,
@@ -58,6 +62,7 @@ export default function EmailPanelToolbar({
 	onMove,
 	onViewSource,
 	onDelete,
+	onRestore,
 }: EmailPanelToolbarProps) {
 	return (
 		<div className="flex items-center gap-1 px-3 py-2 border-b border-kumo-line shrink-0 md:px-4">
@@ -158,7 +163,20 @@ export default function EmailPanelToolbar({
 
 			<MoveToFolderMenu folders={moveToFolders} onMove={onMove} />
 
-			<div className="ml-auto flex items-center gap-0.5">
+			<div className="ml-auto flex items-center gap-1.5">
+				{isTrashFolder && onRestore && (
+					<Tooltip content="Restore to Inbox" side="bottom" asChild>
+						<Button
+							variant="secondary"
+							size="sm"
+							icon={<ArrowCounterClockwiseIcon size={16} />}
+							onClick={onRestore}
+							aria-label="Restore to Inbox"
+						>
+							Restore
+						</Button>
+					</Tooltip>
+				)}
 				<Tooltip content="View source" side="bottom" asChild>
 					<Button
 						variant="ghost"
@@ -169,14 +187,14 @@ export default function EmailPanelToolbar({
 						aria-label="View source"
 					/>
 				</Tooltip>
-				<Tooltip content="Delete" side="bottom" asChild>
+				<Tooltip content={isTrashFolder ? "Delete permanently" : "Move to trash"} side="bottom" asChild>
 					<Button
 						variant="ghost"
 						shape="square"
 						size="sm"
-						icon={<TrashIcon size={18} />}
+						icon={<TrashIcon size={18} className={isTrashFolder ? "text-kumo-danger" : ""} />}
 						onClick={onDelete}
-						aria-label="Delete"
+						aria-label={isTrashFolder ? "Delete permanently" : "Move to trash"}
 					/>
 				</Tooltip>
 				<Tooltip content="Close" side="bottom" asChild>

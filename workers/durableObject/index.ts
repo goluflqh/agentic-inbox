@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql } from "drizzle-orm";
+import { eq, and, or, asc, desc, sql, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -660,11 +660,56 @@ export class MailboxDO extends DurableObject<Env> {
 			.all();
 
 		this.db
+			.delete(schema.attachments)
+			.where(eq(schema.attachments.email_id, id))
+			.run();
+
+		this.db
 			.delete(schema.emails)
 			.where(eq(schema.emails.id, id))
 			.run();
 
 		return emailAttachments;
+	}
+
+	async deleteEmails(ids: string[]) {
+		if (ids.length === 0) return [];
+		const emailAttachments = this.db
+			.select({
+				id: schema.attachments.id,
+				email_id: schema.attachments.email_id,
+				filename: schema.attachments.filename,
+			})
+			.from(schema.attachments)
+			.where(inArray(schema.attachments.email_id, ids))
+			.all();
+
+		this.db
+			.delete(schema.attachments)
+			.where(inArray(schema.attachments.email_id, ids))
+			.run();
+
+		this.db
+			.delete(schema.emails)
+			.where(inArray(schema.emails.id, ids))
+			.run();
+
+		return emailAttachments;
+	}
+
+	async emptyTrash() {
+		const trashEmails = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(
+				sql`${schema.emails.folder_id} = (SELECT id FROM folders WHERE name = 'trash' OR id = 'trash' LIMIT 1)`
+			)
+			.all();
+
+		if (trashEmails.length === 0) return [];
+
+		const emailIds = trashEmails.map((e) => e.id);
+		return this.deleteEmails(emailIds);
 	}
 
 	async getAttachment(id: string) {
@@ -747,13 +792,94 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (!folder) return false;
 
-		this.db
-			.update(schema.emails)
-			.set({ folder_id: folderId })
+		const target = this.db
+			.select({ id: schema.emails.id, thread_id: schema.emails.thread_id })
+			.from(schema.emails)
 			.where(eq(schema.emails.id, id))
-			.run();
+			.get();
+
+		if (target?.thread_id) {
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: folder.id })
+				.where(eq(schema.emails.thread_id, target.thread_id))
+				.run();
+		} else {
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: folder.id })
+				.where(eq(schema.emails.id, id))
+				.run();
+		}
 
 		return true;
+	}
+
+	async moveEmails(ids: string[], folderId: string) {
+		if (ids.length === 0) return true;
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, folderId))
+			.get();
+
+		if (!folder) return false;
+
+		const targets = this.db
+			.select({ id: schema.emails.id, thread_id: schema.emails.thread_id })
+			.from(schema.emails)
+			.where(inArray(schema.emails.id, ids))
+			.all();
+
+		const threadIds = targets.map((t) => t.thread_id).filter((t): t is string => Boolean(t));
+		const singleIds = targets.filter((t) => !t.thread_id).map((t) => t.id);
+
+		if (threadIds.length > 0) {
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: folder.id })
+				.where(inArray(schema.emails.thread_id, threadIds))
+				.run();
+		}
+		if (singleIds.length > 0) {
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: folder.id })
+				.where(inArray(schema.emails.id, singleIds))
+				.run();
+		}
+
+		return true;
+	}
+
+	async moveEmailsBySender(sender: string, targetFolderId: string): Promise<number> {
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(eq(schema.folders.id, targetFolderId))
+			.get();
+		if (!folder) return 0;
+
+		const s = sender.toLowerCase().trim();
+		let targets: { id: string }[];
+		if (s.startsWith("@")) {
+			targets = this.db
+				.select({ id: schema.emails.id })
+				.from(schema.emails)
+				.where(sql`LOWER(${schema.emails.sender}) LIKE ${"%" + s}`)
+				.all();
+		} else {
+			targets = this.db
+				.select({ id: schema.emails.id })
+				.from(schema.emails)
+				.where(sql`LOWER(${schema.emails.sender}) = ${s}`)
+				.all();
+		}
+
+		if (targets.length === 0) return 0;
+		const ids = targets.map((t) => t.id);
+		await this.moveEmails(ids, targetFolderId);
+		return ids.length;
 	}
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────

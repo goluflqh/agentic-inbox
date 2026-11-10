@@ -63,6 +63,7 @@ export default function EmailPanel({
 	const [showDrafts, setShowDrafts] = useState(false);
 	const [previewImage, setPreviewImage] = useState<{ url: string; filename: string } | null>(null);
 	const isDraftFolder = folder === Folders.DRAFT;
+	const isTrashFolder = (folder || email?.folder_id) === Folders.TRASH;
 
 	const threadReplies = useMemo(() => {
 		if (!threadRepliesRaw || !email) return [];
@@ -105,7 +106,26 @@ export default function EmailPanel({
 
 	const toggleStar = () => { if (mailboxId) updateEmail.mutate({ mailboxId, id: email.id, data: { starred: !email.starred } }); };
 	const handleMove = (folderId: string) => { if (mailboxId) { moveEmailMut.mutate({ mailboxId, id: email.id, folderId }); closePanel(); } };
-	const handleDelete = () => { if (mailboxId) { if (!window.confirm("Are you sure you want to delete this email?")) return; deleteEmailMut.mutate({ mailboxId, id: email.id }); closePanel(); } };
+	const handleRestore = () => {
+		if (mailboxId) {
+			moveEmailMut.mutate({ mailboxId, id: email.id, folderId: Folders.INBOX });
+			toastManager.add({ title: "Email restored to Inbox" });
+			closePanel();
+		}
+	};
+	const handleDelete = () => {
+		if (!mailboxId) return;
+		if (isTrashFolder) {
+			if (!window.confirm("Are you sure you want to permanently delete this email? This action cannot be undone.")) return;
+			deleteEmailMut.mutate({ mailboxId, id: email.id });
+			toastManager.add({ title: "Email permanently deleted" });
+			closePanel();
+		} else {
+			moveEmailMut.mutate({ mailboxId, id: email.id, folderId: Folders.TRASH });
+			toastManager.add({ title: "Moved to Trash" });
+			closePanel();
+		}
+	};
 
 	const handleEditDraft = (draftMsg?: Email) => {
 		const target = draftMsg || email;
@@ -174,6 +194,7 @@ export default function EmailPanel({
 				email={email}
 				mailboxId={mailboxId}
 				isDraftFolder={isDraftFolder}
+				isTrashFolder={isTrashFolder}
 				isSending={isSending}
 				moveToFolders={moveToFolders}
 				onBack={closePanel}
@@ -202,6 +223,7 @@ export default function EmailPanel({
 				onMove={handleMove}
 				onViewSource={() => setSourceViewEmail(email)}
 				onDelete={handleDelete}
+				onRestore={handleRestore}
 			/>
 
 			<EmailPanelHeader

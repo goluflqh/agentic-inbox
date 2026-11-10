@@ -6,10 +6,13 @@ import { Button, Input, Pagination, Tooltip } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
+	ArrowCounterClockwiseIcon,
 	ArrowsClockwiseIcon,
+	CommandIcon,
 	EnvelopeOpenIcon,
 	EnvelopeSimpleIcon,
 	FileIcon,
+	FolderSimpleIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	StarIcon,
@@ -24,11 +27,17 @@ import { formatListDate } from "shared/dates";
 import EmailQuickActions from "~/components/EmailQuickActions";
 import { highlightSearch, SearchMatchLabel } from "~/components/SearchMatch";
 import MailboxSplitView from "~/components/MailboxSplitView";
+import KeyboardShortcutsDialog from "~/components/KeyboardShortcutsDialog";
+import { useKeyboardShortcuts } from "~/hooks/useKeyboardShortcuts";
 import { getSnippetText } from "~/lib/utils";
 import {
+	useBatchDeleteEmails,
+	useBatchMoveEmails,
 	useDeleteEmail,
 	useEmails,
+	useEmptyTrash,
 	useMarkThreadRead,
+	useMoveEmail,
 	useUpdateEmail,
 } from "~/queries/emails";
 import { useFolders } from "~/queries/folders";
@@ -245,6 +254,13 @@ export default function EmailListRoute() {
 		});
 	}, [emails]);
 
+	const moveEmailMut = useMoveEmail();
+	const batchMoveMut = useBatchMoveEmails();
+	const batchDeleteMut = useBatchDeleteEmails();
+	const emptyTrashMut = useEmptyTrash();
+
+	const isTrashFolder = folder === Folders.TRASH;
+
 	const toggleStar = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();
 		e.stopPropagation();
@@ -256,15 +272,68 @@ export default function EmailListRoute() {
 			});
 	};
 
-	const handleDelete = (e: React.MouseEvent, emailId: string) => {
+	const handleRowDelete = (e: React.MouseEvent, emailId: string) => {
 		e.preventDefault();
 		e.stopPropagation();
-		if (mailboxId) {
-			const confirmed = window.confirm("Are you sure you want to delete this email?");
+		if (!mailboxId) return;
+		if (isTrashFolder) {
+			const confirmed = window.confirm("Are you sure you want to permanently delete this email? This action cannot be undone.");
 			if (!confirmed) return;
 			deleteEmail.mutate({ mailboxId, id: emailId });
 			if (selectedEmailId === emailId) closePanel();
+		} else {
+			moveEmailMut.mutate({ mailboxId, id: emailId, folderId: Folders.TRASH });
+			if (selectedEmailId === emailId) closePanel();
 		}
+	};
+
+	const handleRowRestore = (e: React.MouseEvent, emailId: string) => {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!mailboxId) return;
+		moveEmailMut.mutate({ mailboxId, id: emailId, folderId: Folders.INBOX });
+		if (selectedEmailId === emailId) closePanel();
+	};
+
+	const handleEmptyTrash = () => {
+		if (!mailboxId) return;
+		if (!window.confirm("Are you sure you want to permanently delete all emails in Trash? This action cannot be undone.")) return;
+		emptyTrashMut.mutate({ mailboxId });
+		closePanel();
+		setSelectedIds(new Set());
+	};
+
+	const handleBatchDelete = () => {
+		if (!mailboxId || selectedIds.size === 0) return;
+		const ids = Array.from(selectedIds);
+		if (isTrashFolder) {
+			if (!window.confirm(`Permanently delete ${ids.length} selected email(s)? This action cannot be undone.`)) return;
+			batchDeleteMut.mutate({ mailboxId, ids });
+		} else {
+			batchMoveMut.mutate({ mailboxId, ids, folderId: Folders.TRASH });
+		}
+		setSelectedIds(new Set());
+	};
+
+	const handleBatchRestore = () => {
+		if (!mailboxId || selectedIds.size === 0) return;
+		const ids = Array.from(selectedIds);
+		batchMoveMut.mutate({ mailboxId, ids, folderId: Folders.INBOX });
+		setSelectedIds(new Set());
+	};
+
+	const handleBatchMove = (targetFolderId: string) => {
+		if (!mailboxId || selectedIds.size === 0) return;
+		const ids = Array.from(selectedIds);
+		batchMoveMut.mutate({ mailboxId, ids, folderId: targetFolderId });
+		setSelectedIds(new Set());
+	};
+
+	const handleBatchStar = (starred: boolean) => {
+		if (!mailboxId || selectedIds.size === 0) return;
+		const targets = emails.filter((em) => selectedIds.has(em.id));
+		Promise.all(targets.map((em) => updateEmail.mutateAsync({ mailboxId, id: em.id, data: { starred } })));
+		setSelectedIds(new Set());
 	};
 
 	const handleRefresh = () => {
@@ -349,6 +418,126 @@ export default function EmailListRoute() {
 		return email.sender.split("@")[0];
 	};
 
+	const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+	const [cursorIndex, setCursorIndex] = useState(0);
+
+	useEffect(() => {
+		if (emails.length === 0) setCursorIndex(0);
+		else if (cursorIndex >= emails.length) setCursorIndex(emails.length - 1);
+	}, [emails.length]);
+
+	useEffect(() => {
+		if (selectedEmailId) {
+			const idx = emails.findIndex((e) => e.id === selectedEmailId);
+			if (idx !== -1) setCursorIndex(idx);
+		}
+	}, [selectedEmailId, emails]);
+
+	useKeyboardShortcuts({
+		onNext: () => {
+			if (emails.length === 0) return;
+			const nextIdx = Math.min(cursorIndex + 1, emails.length - 1);
+			setCursorIndex(nextIdx);
+			if (selectedEmailId !== null) {
+				handleRowClick(emails[nextIdx]);
+			}
+		},
+		onPrevious: () => {
+			if (emails.length === 0) return;
+			const prevIdx = Math.max(cursorIndex - 1, 0);
+			setCursorIndex(prevIdx);
+			if (selectedEmailId !== null) {
+				handleRowClick(emails[prevIdx]);
+			}
+		},
+		onOpen: () => {
+			if (emails.length === 0) return;
+			const current = emails[cursorIndex];
+			if (current) handleRowClick(current);
+		},
+		onClose: () => {
+			if (isShortcutsOpen) {
+				setIsShortcutsOpen(false);
+				return;
+			}
+			if (selectedIds.size > 0) {
+				setSelectedIds(new Set());
+				return;
+			}
+			if (selectedEmailId !== null || isComposing) {
+				closePanel();
+			}
+		},
+		onToggleSelect: () => {
+			if (emails.length === 0) return;
+			const current = emails[cursorIndex];
+			if (current) toggleSelected(current.id);
+		},
+		onArchive: () => {
+			if (selectedIds.size > 0) {
+				handleBatchMove(Folders.ARCHIVE);
+			} else if (selectedEmailId && mailboxId) {
+				moveEmailMut.mutate({ mailboxId, id: selectedEmailId, folderId: Folders.ARCHIVE });
+				closePanel();
+			} else if (emails[cursorIndex] && mailboxId) {
+				moveEmailMut.mutate({ mailboxId, id: emails[cursorIndex].id, folderId: Folders.ARCHIVE });
+			}
+		},
+		onDelete: () => {
+			if (selectedIds.size > 0) {
+				handleBatchDelete();
+			} else if (selectedEmailId && mailboxId) {
+				if (isTrashFolder) {
+					if (window.confirm("Permanently delete this email? This cannot be undone.")) {
+						deleteEmail.mutate({ mailboxId, id: selectedEmailId });
+						closePanel();
+					}
+				} else {
+					moveEmailMut.mutate({ mailboxId, id: selectedEmailId, folderId: Folders.TRASH });
+					closePanel();
+				}
+			} else if (emails[cursorIndex] && mailboxId) {
+				if (isTrashFolder) {
+					if (window.confirm("Permanently delete this email? This cannot be undone.")) {
+						deleteEmail.mutate({ mailboxId, id: emails[cursorIndex].id });
+					}
+				} else {
+					moveEmailMut.mutate({ mailboxId, id: emails[cursorIndex].id, folderId: Folders.TRASH });
+				}
+			}
+		},
+		onToggleStar: () => {
+			if (selectedIds.size > 0) {
+				const anyUnstarred = selectedEmails.some((e) => !e.starred);
+				handleBatchStar(anyUnstarred);
+			} else if (selectedEmailId && mailboxId) {
+				const current = emails.find((e) => e.id === selectedEmailId);
+				if (current) updateEmail.mutate({ mailboxId, id: current.id, data: { starred: !current.starred } });
+			} else if (emails[cursorIndex] && mailboxId) {
+				const current = emails[cursorIndex];
+				updateEmail.mutate({ mailboxId, id: current.id, data: { starred: !current.starred } });
+			}
+		},
+		onToggleRead: () => {
+			if (selectedIds.size > 0) {
+				const anyUnread = selectedEmails.some((e) => hasUnread(e));
+				void markEmailsReadState(selectedEmails, anyUnread);
+			} else if (selectedEmailId && mailboxId) {
+				const current = emails.find((e) => e.id === selectedEmailId);
+				if (current) updateEmail.mutate({ mailboxId, id: current.id, data: { read: !current.read } });
+			} else if (emails[cursorIndex] && mailboxId) {
+				const current = emails[cursorIndex];
+				updateEmail.mutate({ mailboxId, id: current.id, data: { read: !current.read } });
+			}
+		},
+		onCompose: () => {
+			startCompose();
+		},
+		onToggleHelp: () => {
+			setIsShortcutsOpen((prev) => !prev);
+		},
+	});
+
 	return (
 		<MailboxSplitView
 			selectedEmailId={selectedEmailId}
@@ -398,6 +587,17 @@ export default function EmailListRoute() {
 								{totalCount} conversation{totalCount !== 1 ? "s" : ""}
 							</span>
 						)}
+						{isTrashFolder && totalCount > 0 && (
+							<Button
+								variant="secondary"
+								size="sm"
+								icon={<TrashIcon size={14} className="text-kumo-danger" />}
+								onClick={handleEmptyTrash}
+								loading={emptyTrashMut.isPending}
+							>
+								Empty Trash
+							</Button>
+						)}
 						<Tooltip
 							content={isRefreshing ? "Refreshing..." : "Refresh"}
 							side="bottom"
@@ -418,6 +618,16 @@ export default function EmailListRoute() {
 								aria-label="Refresh"
 							/>
 						</Tooltip>
+						<Tooltip content="Keyboard shortcuts (?)" side="bottom" asChild>
+							<Button
+								variant="ghost"
+								shape="square"
+								size="sm"
+								icon={<CommandIcon size={18} />}
+								onClick={() => setIsShortcutsOpen(true)}
+								aria-label="Keyboard shortcuts"
+							/>
+						</Tooltip>
 					</div>
 				</div>
 
@@ -431,30 +641,87 @@ export default function EmailListRoute() {
 						/>
 						<span>{selectedCount > 0 ? `${selectedCount} selected` : "Select page"}</span>
 					</label>
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled={selectedCount === 0}
-						onClick={() => void markEmailsReadState(selectedEmails, true)}
-					>
-						Mark read
-					</Button>
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled={selectedCount === 0}
-						onClick={() => void markEmailsReadState(selectedEmails, false)}
-					>
-						Mark unread
-					</Button>
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled={unreadVisibleEmails.length === 0}
-						onClick={() => void markEmailsReadState(unreadVisibleEmails, true)}
-					>
-						Mark page read
-					</Button>
+					{selectedCount > 0 && (
+						<>
+							{isTrashFolder ? (
+								<>
+									<Button
+										variant="secondary"
+										size="sm"
+										icon={<ArrowCounterClockwiseIcon size={14} />}
+										onClick={handleBatchRestore}
+										loading={batchMoveMut.isPending}
+									>
+										Restore
+									</Button>
+									<Button
+										variant="secondary"
+										size="sm"
+										icon={<TrashIcon size={14} className="text-kumo-danger" />}
+										onClick={handleBatchDelete}
+										loading={batchDeleteMut.isPending}
+									>
+										Delete permanently
+									</Button>
+								</>
+							) : (
+								<>
+									<Button
+										variant="secondary"
+										size="sm"
+										icon={<TrashIcon size={14} />}
+										onClick={handleBatchDelete}
+										loading={batchMoveMut.isPending}
+									>
+										Move to trash
+									</Button>
+									<Button
+										variant="secondary"
+										size="sm"
+										icon={<ArchiveIcon size={14} />}
+										onClick={() => handleBatchMove(Folders.ARCHIVE)}
+										loading={batchMoveMut.isPending}
+									>
+										Archive
+									</Button>
+								</>
+							)}
+							<Button
+								variant="secondary"
+								size="sm"
+								icon={<EnvelopeOpenIcon size={14} />}
+								onClick={() => void markEmailsReadState(selectedEmails, true)}
+							>
+								Mark read
+							</Button>
+							<Button
+								variant="secondary"
+								size="sm"
+								icon={<EnvelopeSimpleIcon size={14} />}
+								onClick={() => void markEmailsReadState(selectedEmails, false)}
+							>
+								Mark unread
+							</Button>
+							<Button
+								variant="secondary"
+								size="sm"
+								icon={<StarIcon size={14} />}
+								onClick={() => handleBatchStar(true)}
+							>
+								Star
+							</Button>
+						</>
+					)}
+					{selectedCount === 0 && (
+						<Button
+							variant="secondary"
+							size="sm"
+							disabled={unreadVisibleEmails.length === 0}
+							onClick={() => void markEmailsReadState(unreadVisibleEmails, true)}
+						>
+							Mark page read
+						</Button>
+					)}
 					{selectedCount > 0 && (
 						<Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set())}>
 							Clear
@@ -592,16 +859,41 @@ export default function EmailListRoute() {
 													aria-label={email.read ? "Mark unread" : "Mark read"}
 												/>
 											</Tooltip>
-											<Tooltip content="Delete" asChild>
-												<Button
-													variant="ghost"
-													shape="square"
-													size="sm"
-													icon={<TrashIcon size={14} />}
-													onClick={(e) => handleDelete(e, email.id)}
-													aria-label="Delete"
-												/>
-											</Tooltip>
+											{isTrashFolder ? (
+												<>
+													<Tooltip content="Restore to Inbox" asChild>
+														<Button
+															variant="ghost"
+															shape="square"
+															size="sm"
+															icon={<ArrowCounterClockwiseIcon size={14} />}
+															onClick={(e) => handleRowRestore(e, email.id)}
+															aria-label="Restore to Inbox"
+														/>
+													</Tooltip>
+													<Tooltip content="Delete permanently" asChild>
+														<Button
+															variant="ghost"
+															shape="square"
+															size="sm"
+															icon={<TrashIcon size={14} className="text-kumo-danger" />}
+															onClick={(e) => handleRowDelete(e, email.id)}
+															aria-label="Delete permanently"
+														/>
+													</Tooltip>
+												</>
+											) : (
+												<Tooltip content="Move to trash" asChild>
+													<Button
+														variant="ghost"
+														shape="square"
+														size="sm"
+														icon={<TrashIcon size={14} />}
+														onClick={(e) => handleRowDelete(e, email.id)}
+														aria-label="Move to trash"
+													/>
+												</Tooltip>
+											)}
 										</div>
 									</div>
 								);
@@ -626,6 +918,11 @@ export default function EmailListRoute() {
 						/>
 					</div>
 				)}
+
+				<KeyboardShortcutsDialog
+					open={isShortcutsOpen}
+					onOpenChange={setIsShortcutsOpen}
+				/>
 		</MailboxSplitView>
 	);
 }

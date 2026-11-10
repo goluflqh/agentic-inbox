@@ -3,7 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Button, Input, Tooltip } from "@cloudflare/kumo";
-import { GearSixIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
+import { GearSixIcon, GlobeHemisphereWestIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
 import { type KeyboardEvent, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { useUIStore } from "~/hooks/useUIStore";
@@ -123,6 +123,15 @@ export default function Header() {
 			)}
 
 			<div className="flex items-center gap-1 ml-auto shrink-0">
+				<Tooltip content="Domain Hub" side="bottom" asChild>
+					<Button
+						variant={location.pathname === "/domains" ? "secondary" : "ghost"}
+						shape="square"
+						icon={<GlobeHemisphereWestIcon size={20} />}
+						onClick={() => navigate("/domains")}
+						aria-label="Domain Hub"
+					/>
+				</Tooltip>
 				{hasMailboxContext && <Tooltip content={isAgentPanelOpen ? "Hide agent panel" : "Show agent panel"} side="bottom" asChild>
 					<Button
 						variant={isAgentPanelOpen ? "secondary" : "ghost"}

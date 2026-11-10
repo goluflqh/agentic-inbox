@@ -99,7 +99,12 @@ export interface SendResult { id: string; status: "sent" | "sent_save_failed"; }
 const api = {
 	// Config
 	getConfig: () =>
-		get<{ domains: string[]; emailAddresses: string[] }>("/api/v1/config"),
+		get<{
+			domains: string[];
+			emailAddresses: string[];
+			defaultProvider?: string;
+			outboundProviders?: Record<string, string>;
+		}>("/api/v1/config"),
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
@@ -125,8 +130,14 @@ const api = {
 		put<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`, data),
 	deleteEmail: (mailboxId: string, id: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`),
+	batchDeleteEmails: (mailboxId: string, ids: string[]) =>
+		post<{ count: number }>(`/api/v1/mailboxes/${mailboxId}/emails/batch/delete`, { ids }),
+	emptyTrash: (mailboxId: string) =>
+		del<{ success: boolean }>(`/api/v1/mailboxes/${mailboxId}/trash`),
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
+	batchMoveEmails: (mailboxId: string, ids: string[], folderId: string) =>
+		post<{ count: number; status: string }>(`/api/v1/mailboxes/${mailboxId}/emails/batch/move`, { ids, folderId }),
 	getThread: (mailboxId: string, threadId: string, opts?: { signal?: AbortSignal }) =>
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
@@ -164,6 +175,26 @@ const api = {
 	// Search
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
+
+	// Blocked Senders
+	getBlockedSenders: (mailboxId: string) =>
+		get<{ mailboxBlocked: string[]; globalBlocked: string[] }>(`/api/v1/mailboxes/${mailboxId}/block-sender`),
+	blockSender: (
+		mailboxId: string,
+		data: { sender: string; scope?: "mailbox" | "global"; moveToTrash?: boolean },
+	) =>
+		post<{
+			success: boolean;
+			scope: "mailbox" | "global";
+			sender: string;
+			movedCount: number;
+			mailboxBlocked: string[];
+			globalBlocked: string[];
+		}>(`/api/v1/mailboxes/${mailboxId}/block-sender`, data),
+	unblockSender: (mailboxId: string, sender: string, scope?: "mailbox" | "global") =>
+		del<{ success: boolean; sender: string; mailboxBlocked: string[]; globalBlocked: string[] }>(
+			`/api/v1/mailboxes/${mailboxId}/block-sender/${encodeURIComponent(sender)}${scope ? `?scope=${scope}` : ""}`,
+		),
 };
 
 export default api;

@@ -4,16 +4,21 @@
 
 import { Badge, Button, Tooltip } from "@cloudflare/kumo";
 import {
+	ArrowSquareOutIcon,
 	CaretDownIcon,
 	CaretUpIcon,
 	CodeIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
+	ProhibitIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
+import { useMemo, useState } from "react";
+import BlockSenderDialog from "~/components/BlockSenderDialog";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
 import EmailQuickActions from "~/components/EmailQuickActions";
+import { detectUnsubscribe } from "~/lib/unsubscribe";
 import {
 	formatDetailDate,
 	formatShortDate,
@@ -70,6 +75,8 @@ export default function ThreadMessage({
 	onPreviewImage,
 }: ThreadMessageProps) {
 	const isSelf = email.sender === mailboxEmail;
+	const unsub = useMemo(() => (!isSelf && !isDraft ? detectUnsubscribe(email) : null), [email, isSelf, isDraft]);
+	const [isBlockOpen, setIsBlockOpen] = useState(false);
 	const containerClassName = `${!isLast ? "border-b border-kumo-line" : ""} ${isDraft ? "border-l-2 border-l-kumo-warning bg-kumo-warning/[0.02]" : ""}`;
 	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : email.sender;
 
@@ -126,7 +133,33 @@ export default function ThreadMessage({
 							<div className="text-xs text-kumo-subtle">To: {email.recipient}</div>
 						</div>
 					</div>
-					<div className="flex items-center gap-1 shrink-0">
+					<div className="flex items-center gap-1.5 shrink-0">
+						{unsub && (
+							<Tooltip content="Unsubscribe from this sender's mailing list" side="bottom" asChild>
+								<Button
+									variant="secondary"
+									size="sm"
+									icon={<ArrowSquareOutIcon size={12} />}
+									onClick={() => window.open(unsub.url, "_blank", "noopener,noreferrer")}
+									className="!h-6 !px-2 text-xs"
+								>
+									Unsubscribe
+								</Button>
+							</Tooltip>
+						)}
+						{mailboxId && !isSelf && !isDraft && (
+							<Tooltip content={`Block ${email.sender}`} side="bottom" asChild>
+								<Button
+									variant="ghost"
+									shape="square"
+									size="sm"
+									icon={<ProhibitIcon size={14} className="text-kumo-danger" />}
+									onClick={() => setIsBlockOpen(true)}
+									aria-label="Block sender"
+									className="!h-6 !w-6"
+								/>
+							</Tooltip>
+						)}
 						<span className="text-xs text-kumo-subtle">
 							{formatShortDate(email.date)}
 						</span>
@@ -217,6 +250,15 @@ export default function ThreadMessage({
 					className="mt-3 md:ml-[42px]"
 				/>
 			</div>
+
+			{mailboxId && !isSelf && !isDraft && (
+				<BlockSenderDialog
+					open={isBlockOpen}
+					onOpenChange={setIsBlockOpen}
+					sender={email.sender}
+					mailboxId={mailboxId}
+				/>
+			)}
 		</div>
 	);
 }
