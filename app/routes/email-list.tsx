@@ -22,6 +22,7 @@ import { useParams, useSearchParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
 import EmailQuickActions from "~/components/EmailQuickActions";
+import { highlightSearch, SearchMatchLabel } from "~/components/SearchMatch";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { getSnippetText } from "~/lib/utils";
 import {
@@ -153,8 +154,15 @@ export default function EmailListRoute() {
 		closePanel,
 		startCompose,
 	} = useUIStore();
-	const [page, setPage] = useState(1);
 	const [searchParams, setSearchParams] = useSearchParams();
+	const pageValue = Number(searchParams.get("page"));
+	const page = Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+	const setPage = (nextPage: number) => {
+		const params = new URLSearchParams(searchParams);
+		if (nextPage <= 1) params.delete("page");
+		else params.set("page", String(nextPage));
+		setSearchParams(params);
+	};
 
 	const queryClient = useQueryClient();
 	const updateEmail = useUpdateEmail();
@@ -173,6 +181,7 @@ export default function EmailListRoute() {
 		const params = new URLSearchParams(searchParams);
 		const nextStatus = next.status ?? status;
 		const nextQ = next.q ?? q;
+		params.delete("page");
 		if (nextStatus === "all") params.delete("status");
 		else params.set("status", nextStatus);
 		if (nextQ.trim()) params.set("q", nextQ.trim());
@@ -216,7 +225,7 @@ export default function EmailListRoute() {
 	const isPanelOpen = selectedEmailId !== null || isComposing;
 
 	// Track folder identity to detect folder changes vs page changes
-	const prevFolderRef = useRef<string | undefined>(undefined);
+	const prevFolderRef = useRef(`${mailboxId}/${folder}/${status}/${q}`);
 
 	useEffect(() => {
 		const folderChanged = prevFolderRef.current !== `${mailboxId}/${folder}/${status}/${q}`;
@@ -224,7 +233,6 @@ export default function EmailListRoute() {
 
 		if (folderChanged) {
 			closePanel();
-			setPage(1);
 			setSelectedIds(new Set());
 		}
 	}, [mailboxId, folder, q, status, closePanel]);
@@ -462,7 +470,7 @@ export default function EmailListRoute() {
 						<div>
 							{emails.map((email) => {
 								const isSelected = selectedEmailId === email.id;
-								const snippet = getSnippetText(email.snippet);
+								const snippet = email.match_excerpt || getSnippetText(email.snippet);
 								return (
 									<div
 										key={email.id}
@@ -547,16 +555,17 @@ export default function EmailListRoute() {
 												<span
 													className={hasUnread(email) ? "font-medium text-kumo-default" : "text-kumo-subtle"}
 												>
-													{email.subject}
+													{highlightSearch(email.subject, q)}
 												</span>
 											{snippet && (
 												<span className="text-kumo-subtle font-normal">
-													{" "}&mdash; {snippet}
+													{" "}&mdash; {highlightSearch(snippet, q)}
 												</span>
 											)}
 										</div>
+										<SearchMatchLabel fields={email.match_fields} />
 										<EmailQuickActions
-											email={email}
+												email={email}
 											compact
 											stopPropagation
 											className="mt-1"

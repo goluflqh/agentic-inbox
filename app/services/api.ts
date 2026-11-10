@@ -92,6 +92,8 @@ interface EmailListResponse {
 	totalCount: number;
 }
 
+export interface SendResult { id: string; status: "sent" | "sent_save_failed"; }
+
 // ---------- API client ----------
 
 const api = {
@@ -116,7 +118,7 @@ const api = {
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/emails`, { params, signal: opts?.signal }),
 	sendEmail: (mailboxId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails`, email),
+		post<SendResult>(`/api/v1/mailboxes/${mailboxId}/emails`, email),
 	getEmail: (mailboxId: string, id: string, opts?: { signal?: AbortSignal }) =>
 		get<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`, { signal: opts?.signal }),
 	updateEmail: (mailboxId: string, id: string, data: unknown) =>
@@ -145,9 +147,9 @@ const api = {
 		},
 	) => post<{ draft_id: string }>(`/api/v1/mailboxes/${mailboxId}/drafts`, draft),
 	replyToEmail: (mailboxId: string, emailId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/reply`, email),
+		post<SendResult>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/reply`, email),
 	forwardEmail: (mailboxId: string, emailId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/forward`, email),
+		post<SendResult>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/forward`, email),
 
 	// Folders
 	listFolders: (mailboxId: string) =>

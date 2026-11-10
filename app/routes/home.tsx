@@ -23,7 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { Link as RouterLink } from "react-router";
+import { Link as RouterLink, useNavigate, useSearchParams } from "react-router";
 import api from "~/services/api";
 import {
 	useCreateMailbox,
@@ -40,6 +40,9 @@ export function meta() {
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
+	const navigate = useNavigate();
+	const [searchParams, setSearchParams] = useSearchParams();
+	const [emailSearch, setEmailSearch] = useState("");
 	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
@@ -57,9 +60,23 @@ export default function HomeRoute() {
 	const [newPrefix, setNewPrefix] = useState("");
 	const [selectedDomain, setSelectedDomain] = useState("");
 	const [newName, setNewName] = useState("");
-	const [domainFilter, setDomainFilter] = useState("all");
-	const [mailboxSearch, setMailboxSearch] = useState("");
-	const [mailboxPage, setMailboxPage] = useState(1);
+	const domainFilter = searchParams.get("domain") || "all";
+	const mailboxSearch = searchParams.get("mailbox") || "";
+	const setMailboxFilter = (key: "domain" | "mailbox", value: string) => {
+		const params = new URLSearchParams(searchParams);
+		params.delete("page");
+		if (!value || (key === "domain" && value === "all")) params.delete(key);
+		else params.set(key, value);
+		setSearchParams(params, { replace: key === "mailbox" });
+	};
+	const pageValue = Number(searchParams.get("page"));
+	const mailboxPage = Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : 1;
+	const setMailboxPage = (page: number) => {
+		const params = new URLSearchParams(searchParams);
+		if (page <= 1) params.delete("page");
+		else params.set("page", String(page));
+		setSearchParams(params);
+	};
 	const [isCreating, setIsCreating] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
 	const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -178,10 +195,6 @@ export default function HomeRoute() {
 
 	const isLoading = !configData;
 
-	useEffect(() => {
-		setMailboxPage(1);
-	}, [domainFilter, mailboxSearch]);
-
 	const mailboxSummary = (unreadCount = 0, inboxCount = 0) => {
 		if (unreadCount > 0) {
 			return `${unreadCount} unread - ${inboxCount} conversation${inboxCount === 1 ? "" : "s"}`;
@@ -218,20 +231,31 @@ export default function HomeRoute() {
 							{domains.join(", ")}
 						</p>
 					)}
-					<div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
+					<form className="mt-5 flex gap-2" onSubmit={(event) => {
+						event.preventDefault();
+						const q = emailSearch.trim();
+						if (!q) return;
+						const params = new URLSearchParams({ q });
+						if (domainFilter !== "all") params.set("domain", domainFilter);
+						navigate(`/all/emails/inbox?${params}`);
+					}}>
+						<div className="min-w-0 flex-1"><Input aria-label="Search email content" placeholder="Search email sender, subject or content" size="sm" value={emailSearch} onChange={(event) => setEmailSearch(event.target.value)} /></div>
+						<Button type="submit" variant="secondary" size="sm">Search emails</Button>
+					</form>
+					<div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
 						<Input
 							aria-label="Search mailboxes"
 							placeholder="Search mailboxes"
 							size="sm"
 							value={mailboxSearch}
-							onChange={(event) => setMailboxSearch(event.target.value)}
+							onChange={(event) => setMailboxFilter("mailbox", event.target.value)}
 						/>
 						{domains.length > 1 && (
 							<Select
 								aria-label="Domain filter"
 								value={domainFilter}
 								onValueChange={(value) => {
-									if (value) setDomainFilter(value);
+									if (value) setMailboxFilter("domain", value);
 								}}
 							>
 								<Select.Option value="all">All domains</Select.Option>

@@ -10,6 +10,8 @@ import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
+import { metadataFromStoredEmail } from "../lib/quick-email-metadata";
+import { searchMatch } from "../lib/search-match";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -487,6 +489,17 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Single email operations (Drizzle) ──────────────────────────
 
+	async getQuickMetadata(ids: string[]) {
+		if (!ids.length) return [];
+		if (ids.length > 100) throw new Error("Too many email IDs");
+		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+		const rows = [...this.ctx.storage.sql.exec(
+			`SELECT id, subject, SUBSTR(body, 1, 40001) as body FROM emails WHERE id IN (${placeholders})`,
+			...ids,
+		)] as { id: string; subject: string; body: string }[];
+		return rows.map((row) => ({ id: row.id, ...metadataFromStoredEmail(row.subject, row.body) }));
+	}
+
 	async getEmail(id: string) {
 		const email = this.db
 			.select()
@@ -504,6 +517,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		return {
 			...email,
+			...metadataFromStoredEmail(email.subject, email.body),
 			read: !!email.read,
 			starred: !!email.starred,
 			attachments: emailAttachments,
@@ -546,6 +560,7 @@ export class MailboxDO extends DurableObject<Env> {
 
 		return emailRows.map((email) => ({
 			...email,
+			...metadataFromStoredEmail(email.subject, email.body),
 			read: !!email.read,
 			starred: !!email.starred,
 			attachments: attachmentsByEmail.get(email.id) || [],
@@ -757,7 +772,7 @@ export class MailboxDO extends DurableObject<Env> {
 			SELECT e.id, e.subject, e.sender, e.recipient, e.cc, e.bcc, e.date,
 				e.read, e.starred, e.in_reply_to, e.email_references,
 				e.thread_id, e.folder_id, e.auth_code, e.quick_link,
-				SUBSTR(e.body, 1, 300) as snippet,
+				e.body as search_body, SUBSTR(e.body, 1, 300) as snippet,
 				f.name as folder_name
 			FROM emails e
 			LEFT JOIN folders f ON e.folder_id = f.id
@@ -766,11 +781,11 @@ export class MailboxDO extends DurableObject<Env> {
 		params.push(limit, offset);
 
 		const result = this.ctx.storage.sql.exec(query, ...params);
-		return [...result].map((row: any) => ({
-			...row,
-			read: !!row.read,
-			starred: !!row.starred,
-		}));
+		return [...result].map((row: any) => {
+			const { search_body, ...email } = row;
+			const match = searchMatch(row.subject || "", search_body || "", row.sender || "", [row.recipient, row.cc, row.bcc].filter(Boolean).join(" "), options.query || "");
+			return { ...email, read: !!row.read, starred: !!row.starred, match_fields: match.fields, match_excerpt: match.excerpt };
+		});
 	}
 
 	/**

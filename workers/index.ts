@@ -9,6 +9,7 @@ import { z } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, type StoredAttachment } from "./lib/attachments";
 import { extractQuickEmailMetadata } from "./lib/quick-email-metadata";
+import { fetchPrefix } from "./lib/aggregate-page";
 import {
 	validateSender,
 	SenderValidationError,
@@ -131,6 +132,13 @@ async function createMailboxRecord(
 
 // -- App & middleware -----------------------------------------------
 
+async function refreshQuickMetadata<T extends { id: string }>(stub: { getQuickMetadata: (ids: string[]) => Promise<{ id: string; auth_code: string | null; quick_link: string | null }[]> }, emails: T[]): Promise<T[]> {
+	if (!emails.length) return emails;
+	const metadata = await stub.getQuickMetadata(emails.map((email) => email.id));
+	const byId = new Map(metadata.map(({ id, ...values }) => [id, values]));
+	return emails.map((email) => ({ ...email, ...(byId.get(email.id) || { auth_code: null, quick_link: null }) }));
+}
+
 const app = new Hono<MailboxContext>();
 app.use("/api/*", cors({
 	origin: (origin) => {
@@ -193,9 +201,17 @@ app.get("/api/v1/all-emails", async (c) => {
 	const domain = c.req.query("domain")?.toLowerCase();
 	const status = statusQuery(c as AppContext);
 	const q = c.req.query("q")?.trim();
+	const date_start = c.req.query("date_start");
+	const date_end = c.req.query("date_end");
+	const validDate = (value: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+	if ((date_start && !validDate(date_start)) || (date_end && !validDate(date_end)) || (date_start && date_end && date_start > date_end)) {
+		return c.json({ error: "Invalid date range" }, 400);
+	}
 	const page = Math.max(intQuery(c as AppContext, "page") || 1, 1);
 	const limit = Math.min(Math.max(intQuery(c as AppContext, "limit") || 25, 1), 100);
-	const fetchLimit = Math.min(page * limit, 100);
+	const fetchLimit = page * limit;
+	// Bound cross-mailbox fan-out; deeper pagination needs a cursor-based merge.
+	if (fetchLimit > 1000) return c.json({ error: "All-inbox pagination is limited to the first 1000 results. Narrow your search or select a mailbox." }, 400);
 	const offset = (page - 1) * limit;
 	const allMailboxes = await listMailboxes(c.env.BUCKET);
 	const mailboxes = domain
@@ -206,15 +222,17 @@ app.get("/api/v1/all-emails", async (c) => {
 		mailboxes.map(async (mailbox) => {
 			const stub = getMailboxStub(c.env, mailbox.id) as any;
 			try {
-				if (q) {
+				if (q || date_start || date_end) {
 					const searchOpts = {
 						query: q,
+						date_start,
+						date_end,
 						folder,
 						is_read: status === "unread" ? false : undefined,
 						is_starred: status === "starred" ? true : undefined,
 					};
 					const [emails, totalCount] = await Promise.all([
-						stub.searchEmails({ ...searchOpts, page: 1, limit: fetchLimit }),
+						fetchPrefix<Record<string, unknown>>(fetchLimit, (page, limit) => stub.searchEmails({ ...searchOpts, page, limit })),
 						stub.countSearchResults(searchOpts),
 					]);
 					return {
@@ -225,7 +243,7 @@ app.get("/api/v1/all-emails", async (c) => {
 					};
 				}
 				const [emails, totalCount] = await Promise.all([
-					stub.getThreadedEmails({ folder, status, page: 1, limit: fetchLimit }),
+					fetchPrefix<Record<string, unknown>>(fetchLimit, (page, limit) => stub.getThreadedEmails({ folder, status, page, limit })),
 					stub.countThreadedEmails(folder, status),
 				]);
 				return {
@@ -236,15 +254,26 @@ app.get("/api/v1/all-emails", async (c) => {
 				};
 			} catch (e) {
 				console.error(`Failed to aggregate mailbox ${mailbox.id}:`, (e as Error).message);
-				return { emails: [], totalCount: 0 };
+				throw e;
 			}
 		}),
 	);
 
-	const emails = results
+	const pageEmails = results
 		.flatMap((result) => result.emails)
 		.sort((a, b) => new Date(String(b.date || "")).getTime() - new Date(String(a.date || "")).getTime())
 		.slice(offset, offset + limit);
+	const grouped = new Map<string, typeof pageEmails>();
+	for (const email of pageEmails) {
+		const key = String(email.mailbox_id);
+		grouped.set(key, [...(grouped.get(key) || []), email]);
+	}
+	const refreshed = await Promise.all([...grouped].map(async ([mailboxId, group]) => {
+		const stub = getMailboxStub(c.env, mailboxId);
+		return refreshQuickMetadata(stub, group.map((email) => ({ ...email, id: String(email.id) })));
+	}));
+	const byKey = new Map(refreshed.flat().map((email) => [`${email.mailbox_id}:${email.id}`, email]));
+	const emails = pageEmails.map((email) => byKey.get(`${email.mailbox_id}:${email.id}`) || email);
 
 	return c.json({
 		emails,
@@ -315,15 +344,15 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 		};
 		const emails = await (stub as any).searchEmails({ ...searchOpts, page, limit });
 		const totalCount = await (stub as any).countSearchResults(searchOpts);
-		return c.json({ emails, totalCount });
+		return c.json({ emails: await refreshQuickMetadata(stub, emails), totalCount });
 	}
 
 	if (threaded && folder) {
 		const emails = await (stub as any).getThreadedEmails({ folder, status, page, limit });
 		const totalCount = await (stub as any).countThreadedEmails(folder, status);
-		return c.json({ emails, totalCount });
+		return c.json({ emails: await refreshQuickMetadata(stub, emails), totalCount });
 	}
-	const emails = await stub.getEmails({ folder, thread_id, status, page, limit, sortColumn, sortDirection });
+	const emails = await refreshQuickMetadata(stub, await stub.getEmails({ folder, thread_id, status, page, limit, sortColumn, sortDirection }));
 	if (folder) {
 		const totalCount = await stub.countEmails({ folder, thread_id, status });
 		return c.json({ emails, totalCount });
@@ -360,6 +389,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 		return c.json({ error: `Failed to send email: ${(e as Error).message}` }, 502);
 	}
 
+	try {
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
 	await stub.createEmail(Folders.SENT, {
@@ -378,6 +408,10 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 			{ key: "message-id", value: `<${outgoingMessageId}>` },
 		]),
 	}, attachmentData);
+	} catch (e) {
+		console.error("Provider accepted message but Sent copy failed:", (e as Error).message);
+		return c.json({ id: messageId, status: "sent_save_failed", deliveryMessageId: delivery.messageId }, 202);
+	}
 
 	return c.json({ id: messageId, status: "sent", deliveryMessageId: delivery.messageId }, 202);
 });
@@ -477,7 +511,7 @@ app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 	const stub = c.var.mailboxStub as any;
 	const emails = await stub.searchEmails({ ...searchOpts, page: intQuery(c, "page"), limit: intQuery(c, "limit") });
 	const totalCount = await stub.countSearchResults(searchOpts);
-	return c.json({ emails, totalCount });
+	return c.json({ emails: await refreshQuickMetadata(stub, emails), totalCount });
 });
 
 // -- Attachments ----------------------------------------------------
@@ -486,13 +520,15 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	const emailId = c.req.param("emailId")!;
 	const attachmentId = c.req.param("attachmentId")!;
 	const attachment = await c.var.mailboxStub.getAttachment(attachmentId);
-	if (!attachment) return c.json({ error: "Attachment not found" }, 404);
+	if (!attachment || attachment.email_id !== emailId) return c.json({ error: "Attachment not found" }, 404);
 	const obj = await c.env.BUCKET.get(`attachments/${emailId}/${attachmentId}/${attachment.filename}`);
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
 	const headers = new Headers();
 	headers.set("Content-Type", attachment.mimetype);
 	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
-	headers.set("Content-Disposition", `attachment; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+	const inlineImage = attachment.disposition === "inline" && /^(image\/png|image\/jpeg|image\/gif|image\/webp)$/i.test(attachment.mimetype);
+	headers.set("Content-Disposition", `${inlineImage ? "inline" : "attachment"}; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+	headers.set("X-Content-Type-Options", "nosniff");
 	return new Response(obj.body, { headers });
 });
 
@@ -583,11 +619,6 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		auth_code: quickMetadata.auth_code, quick_link: quickMetadata.quick_link,
 	}, attachmentData);
 
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
 }
 
 export { app, receiveEmail };
