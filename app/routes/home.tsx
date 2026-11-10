@@ -23,7 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { Link as RouterLink, useNavigate, useSearchParams } from "react-router";
+import { Link as RouterLink, useLocation, useNavigate, useSearchParams } from "react-router";
 import api from "~/services/api";
 import {
 	useCreateMailbox,
@@ -41,11 +41,19 @@ export function meta() {
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
 	const navigate = useNavigate();
+	const location = useLocation();
 	const [searchParams, setSearchParams] = useSearchParams();
 	const [emailSearch, setEmailSearch] = useState("");
 	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
+
+	useEffect(() => {
+		if (typeof window !== "undefined") {
+			const current = `${location.pathname}${location.search}`;
+			sessionStorage.setItem("last_mailboxes_url", current);
+		}
+	}, [location.pathname, location.search]);
 
 	const { data: configData } = useQuery({
 		queryKey: queryKeys.config,
@@ -237,7 +245,9 @@ export default function HomeRoute() {
 						if (!q) return;
 						const params = new URLSearchParams({ q });
 						if (domainFilter !== "all") params.set("domain", domainFilter);
-						navigate(`/all/emails/inbox?${params}`);
+						navigate(`/all/emails/inbox?${params}`, {
+							state: { from: `${location.pathname}${location.search}` },
+						});
 					}}>
 						<div className="min-w-0 flex-1"><Input aria-label="Search email content" placeholder="Search email sender, subject or content" size="sm" value={emailSearch} onChange={(event) => setEmailSearch(event.target.value)} /></div>
 						<Button type="submit" variant="secondary" size="sm">Search emails</Button>
@@ -277,6 +287,7 @@ export default function HomeRoute() {
 					<div className="space-y-3">
 						<RouterLink
 							to={allInboxLink()}
+							state={{ from: `${location.pathname}${location.search}` }}
 							className="group flex items-center gap-4 rounded-xl border border-kumo-line bg-kumo-base px-5 py-4 no-underline transition-colors hover:bg-kumo-tint"
 						>
 							<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
@@ -299,6 +310,7 @@ export default function HomeRoute() {
 						<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
 							<RouterLink
 								to={allInboxLink("unread")}
+								state={{ from: `${location.pathname}${location.search}` }}
 								className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 no-underline transition-colors hover:bg-kumo-tint"
 							>
 								<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default">
@@ -316,6 +328,7 @@ export default function HomeRoute() {
 							</RouterLink>
 							<RouterLink
 								to={allInboxLink("starred")}
+								state={{ from: `${location.pathname}${location.search}` }}
 								className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 no-underline transition-colors hover:bg-kumo-tint"
 							>
 								<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-warning">
@@ -332,6 +345,7 @@ export default function HomeRoute() {
 							<RouterLink
 								key={account.id}
 								to={`/mailbox/${account.id}`}
+								state={{ from: `${location.pathname}${location.search}` }}
 								className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
 									idx > 0 ? "border-t border-kumo-line" : ""
 								}`}

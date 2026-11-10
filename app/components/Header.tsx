@@ -139,11 +139,7 @@ export default function Header() {
 						shape="square"
 						icon={<GearSixIcon size={20} />}
 						onClick={() =>
-							navigate(
-								isSettingsActive
-									? `/mailbox/${mailboxId}/emails/inbox`
-									: `/mailbox/${mailboxId}/settings`,
-							)
+							navigate(isSettingsActive ? `/mailbox/${mailboxId}/emails/inbox` : `/mailbox/${mailboxId}/settings`, { state: location.state })
 						}
 						aria-label="Settings"
 					/>

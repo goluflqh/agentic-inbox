@@ -59,6 +59,7 @@ function FolderLink({
 	return (
 		<NavLink
 			to={to}
+			state={location.state}
 			onClick={onClick}
 			className={({ isActive }) =>
 				`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
@@ -90,9 +91,11 @@ function ViewLink({
 	isActive: boolean;
 	onClick?: () => void;
 }) {
+	const location = useLocation();
 	return (
 		<RouterLink
 			to={to}
+			state={location.state}
 			onClick={onClick}
 			className={`flex items-center gap-3 py-2 px-3 rounded-md text-sm transition-colors ${
 				isActive
@@ -171,16 +174,49 @@ export default function Sidebar() {
 	const unreadPath = viewPath("unread");
 	const starredPath = viewPath("starred");
 
+	const handleBack = () => {
+		closeSidebar();
+		const stateFrom =
+			(location.state as { from?: string; returnTo?: string } | null)?.from ||
+			(location.state as { from?: string; returnTo?: string } | null)?.returnTo;
+		if (stateFrom && typeof stateFrom === "string" && stateFrom.startsWith("/")) {
+			navigate(stateFrom);
+			return;
+		}
+
+		if (typeof window !== "undefined") {
+			const saved = sessionStorage.getItem("last_mailboxes_url");
+			if (saved && saved.startsWith("/")) {
+				navigate(saved);
+				return;
+			}
+		}
+
+		if (mailboxId && mailboxId.includes("@")) {
+			const domain = mailboxId.split("@")[1].toLowerCase();
+			navigate(`/?domain=${encodeURIComponent(domain)}`);
+			return;
+		}
+
+		if (isAllMail) {
+			const allMailDomain = new URLSearchParams(location.search).get("domain");
+			if (allMailDomain && allMailDomain !== "all") {
+				navigate(`/?domain=${encodeURIComponent(allMailDomain)}`);
+				return;
+			}
+		}
+
+		navigate("/");
+	};
+
+
 	return (
 		<aside className="h-full w-64 bg-kumo-recessed flex flex-col shrink-0 border-r border-kumo-line">
 			{/* Back + identity */}
 			<div className="px-4 pt-4 pb-1">
 				<button
 					type="button"
-					onClick={() => {
-						navigate("/");
-						closeSidebar();
-					}}
+					onClick={handleBack}
 					className="flex items-center gap-1.5 text-kumo-subtle text-sm hover:text-kumo-default transition-colors mb-2.5 cursor-pointer bg-transparent border-0 p-0"
 				>
 					<CaretLeftIcon size={14} />

@@ -494,10 +494,51 @@ export class MailboxDO extends DurableObject<Env> {
 		if (ids.length > 100) throw new Error("Too many email IDs");
 		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
 		const rows = [...this.ctx.storage.sql.exec(
-			`SELECT id, subject, SUBSTR(body, 1, 40001) as body FROM emails WHERE id IN (${placeholders})`,
+			`SELECT id, subject, SUBSTR(body, 1, 40001) as body, thread_id FROM emails WHERE id IN (${placeholders})`,
 			...ids,
-		)] as { id: string; subject: string; body: string }[];
-		return rows.map((row) => ({ id: row.id, ...metadataFromStoredEmail(row.subject, row.body) }));
+		)] as { id: string; subject: string; body: string; thread_id: string | null }[];
+
+		const results = new Map<string, { id: string; auth_code: string | null; quick_link: string | null }>();
+		const missingThreadLookup: { emailId: string; threadId: string }[] = [];
+
+		for (const row of rows) {
+			const meta = metadataFromStoredEmail(row.subject, row.body);
+			results.set(row.id, { id: row.id, ...meta });
+			if (!meta.auth_code && !meta.quick_link && row.thread_id) {
+				missingThreadLookup.push({ emailId: row.id, threadId: row.thread_id });
+			}
+		}
+
+		if (missingThreadLookup.length > 0) {
+			const uniqueThreads = [...new Set(missingThreadLookup.map((item) => item.threadId))];
+			const threadPlaceholders = uniqueThreads.map((_, i) => `?${i + 1}`).join(",");
+			const threadRows = [...this.ctx.storage.sql.exec(
+				`SELECT id, thread_id, subject, SUBSTR(body, 1, 40001) as body, date FROM emails WHERE thread_id IN (${threadPlaceholders}) ORDER BY date DESC`,
+				...uniqueThreads,
+			)] as { id: string; thread_id: string; subject: string; body: string; date: string }[];
+
+			const byThread = new Map<string, typeof threadRows>();
+			for (const tr of threadRows) {
+				if (!tr.thread_id) continue;
+				const list = byThread.get(tr.thread_id) || [];
+				list.push(tr);
+				byThread.set(tr.thread_id, list);
+			}
+
+			for (const { emailId, threadId } of missingThreadLookup) {
+				const candidates = byThread.get(threadId) || [];
+				for (const candidate of candidates) {
+					if (candidate.id === emailId) continue;
+					const meta = metadataFromStoredEmail(candidate.subject, candidate.body);
+					if (meta.auth_code || meta.quick_link) {
+						results.set(emailId, { id: emailId, ...meta });
+						break;
+					}
+				}
+			}
+		}
+
+		return [...results.values()];
 	}
 
 	async getEmail(id: string) {

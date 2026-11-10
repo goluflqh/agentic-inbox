@@ -2,8 +2,9 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Navigate } from "react-router";
+import { Navigate, useLocation } from "react-router";
 
 export default function MailboxIndexRoute() {
-  return <Navigate to="emails/inbox" replace />;
+  const location = useLocation();
+  return <Navigate to={`emails/inbox${location.search}`} replace state={location.state} />;
 }

@@ -5,7 +5,7 @@
 import { Badge, Button, Loader, Pagination, Tooltip } from "@cloudflare/kumo";
 import { ArrowLeftIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import MailboxSplitView from "~/components/MailboxSplitView";
 import { highlightSearch, SearchMatchLabel } from "~/components/SearchMatch";
 import { parseSearchQuery } from "~/lib/search-parser";
@@ -19,6 +19,7 @@ import type { Email } from "~/types";
 export default function SearchResultsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const [searchParams, setSearchParams] = useSearchParams();
+	const location = useLocation();
 	const navigate = useNavigate();
 	const { selectedEmailId, isComposing, selectEmail, closePanel } = useUIStore();
 	const updateEmail = useUpdateEmail();
@@ -69,7 +70,7 @@ export default function SearchResultsRoute() {
 		>
 			<>
 				<div className="flex items-center gap-2 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
-					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => navigate(`/mailbox/${mailboxId}/emails/inbox`)} aria-label="Back to inbox" /></Tooltip>
+					<Tooltip content="Back to inbox" side="bottom" asChild><Button variant="ghost" shape="square" size="sm" icon={<ArrowLeftIcon size={18} />} onClick={() => navigate(`/mailbox/${mailboxId}/emails/inbox`, { state: location.state })} aria-label="Back to inbox" /></Tooltip>
 					<div className="min-w-0 flex-1"><h1 className="text-lg font-semibold text-kumo-default truncate">Search Results</h1>{!isLoading && <span className="text-sm text-kumo-subtle">{totalCount} result{totalCount !== 1 ? "s" : ""}{urlQuery ? ` for "${urlQuery}"` : ""}</span>}</div>
 				</div>
 				<div className="flex-1 overflow-y-auto">
