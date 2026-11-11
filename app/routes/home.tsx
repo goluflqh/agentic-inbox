@@ -20,6 +20,7 @@ import {
 	PlusIcon,
 	StarIcon,
 	TrashIcon,
+	XIcon,
 } from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
@@ -102,6 +103,24 @@ export default function HomeRoute() {
 		if (page <= 1) params.delete("page");
 		else params.set("page", String(page));
 		setSearchParams(params);
+	};
+
+	const hasActiveFilters = Boolean(
+		mailboxSearch.trim() ||
+		mailboxInput.trim() ||
+		domainFilter !== "all" ||
+		emailSearch.trim() ||
+		mailboxPage > 1
+	);
+
+	const handleResetHome = () => {
+		setMailboxInput("");
+		setEmailSearch("");
+		setSearchParams(new URLSearchParams(), { replace: true });
+		navigate("/", { replace: true });
+		if (typeof window !== "undefined") {
+			sessionStorage.setItem("last_mailboxes_url", "/");
+		}
 	};
 	const [isCreating, setIsCreating] = useState(false);
 	const [createError, setCreateError] = useState<string | null>(null);
@@ -241,7 +260,29 @@ export default function HomeRoute() {
 			<div className="mx-auto max-w-2xl px-4 py-8 md:px-6 md:py-16">
 				<div className="mb-8">
 					<div className="flex items-center justify-between">
-						<h1 className="text-2xl font-bold text-kumo-default">Mailboxes</h1>
+						<div className="flex items-center gap-2.5">
+							<h1 className="text-2xl font-bold">
+								<button
+									type="button"
+									onClick={handleResetHome}
+									className="cursor-pointer bg-transparent border-0 p-0 text-left text-2xl font-bold text-kumo-default hover:text-kumo-brand hover:opacity-80 transition-all select-none focus:outline-none"
+									title="Về trang chủ và xóa tất cả bộ lọc (Reset filters)"
+								>
+									Mailboxes
+								</button>
+							</h1>
+							{hasActiveFilters && (
+								<button
+									type="button"
+									onClick={handleResetHome}
+									className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-kumo-fill hover:bg-kumo-tint text-kumo-subtle hover:text-kumo-default border border-kumo-line transition-colors cursor-pointer"
+									title="Xóa tất cả bộ lọc và tìm kiếm"
+								>
+									<XIcon size={12} />
+									<span>Reset filters</span>
+								</button>
+							)}
+						</div>
 						<div className="flex items-center gap-2">
 							<Button
 								variant="secondary"
@@ -276,7 +317,7 @@ export default function HomeRoute() {
 							state: { from: `${location.pathname}${location.search}` },
 						});
 					}}>
-						<div className="min-w-0 flex-1">
+						<div className="min-w-0 flex-1 relative flex items-center">
 							<Input
 								aria-label="Search email content"
 								placeholder="Search email sender, subject or content"
@@ -290,31 +331,58 @@ export default function HomeRoute() {
 									isEmailComposingRef.current = false;
 									setEmailSearch(event.currentTarget.value);
 								}}
+								className="w-full pr-8"
 							/>
+							{emailSearch && (
+								<button
+									type="button"
+									onClick={() => setEmailSearch("")}
+									className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-kumo-subtle hover:text-kumo-default hover:bg-kumo-tint transition-colors cursor-pointer"
+									aria-label="Clear email search"
+								>
+									<XIcon size={14} />
+								</button>
+							)}
 						</div>
 						<Button type="submit" variant="secondary" size="sm">Search emails</Button>
 					</form>
 					<div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
-						<Input
-							aria-label="Search mailboxes"
-							placeholder="Search mailboxes"
-							size="sm"
-							value={mailboxInput}
-							onChange={(event) => setMailboxInput(event.target.value)}
-							onCompositionStart={() => {
-								isMailboxComposingRef.current = true;
-							}}
-							onCompositionEnd={(event) => {
-								isMailboxComposingRef.current = false;
-								setMailboxInput(event.currentTarget.value);
-								setMailboxFilter("mailbox", event.currentTarget.value);
-							}}
-							onKeyDown={(event) => {
-								if (event.key === "Enter") {
-									setMailboxFilter("mailbox", mailboxInput);
-								}
-							}}
-						/>
+						<div className="relative flex items-center">
+							<Input
+								aria-label="Search mailboxes"
+								placeholder="Search mailboxes"
+								size="sm"
+								value={mailboxInput}
+								onChange={(event) => setMailboxInput(event.target.value)}
+								onCompositionStart={() => {
+									isMailboxComposingRef.current = true;
+								}}
+								onCompositionEnd={(event) => {
+									isMailboxComposingRef.current = false;
+									setMailboxInput(event.currentTarget.value);
+									setMailboxFilter("mailbox", event.currentTarget.value);
+								}}
+								onKeyDown={(event) => {
+									if (event.key === "Enter") {
+										setMailboxFilter("mailbox", mailboxInput);
+									}
+								}}
+								className="w-full pr-8"
+							/>
+							{mailboxInput && (
+								<button
+									type="button"
+									onClick={() => {
+										setMailboxInput("");
+										setMailboxFilter("mailbox", "");
+									}}
+									className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-kumo-subtle hover:text-kumo-default hover:bg-kumo-tint transition-colors cursor-pointer"
+									aria-label="Clear mailbox search"
+								>
+									<XIcon size={14} />
+								</button>
+							)}
+						</div>
 						{domains.length > 1 && (
 							<Select
 								aria-label="Domain filter"
@@ -468,6 +536,33 @@ export default function HomeRoute() {
 								/>
 							</div>
 						)}
+					</div>
+				) : accounts.length > 0 ? (
+					<div className="rounded-xl border border-kumo-line bg-kumo-base py-14 px-6">
+						<div className="flex flex-col items-center text-center">
+							<div className="mb-3">
+								<EnvelopeIcon
+									size={44}
+									weight="thin"
+									className="text-kumo-subtle"
+								/>
+							</div>
+							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
+								No matching mailboxes found
+							</h3>
+							<p className="text-sm text-kumo-subtle max-w-sm mb-5">
+								{mailboxSearch
+									? `No mailboxes matched "${mailboxSearch}".`
+									: "No mailboxes matched your active filters."}
+							</p>
+							<Button
+								variant="secondary"
+								icon={<XIcon size={14} />}
+								onClick={handleResetHome}
+							>
+								Reset filters
+							</Button>
+						</div>
 					</div>
 				) : (
 					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">
