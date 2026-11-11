@@ -133,13 +133,16 @@ async function removeGlobalBlockedSender(env: Env, sender: string): Promise<stri
 function isSenderBlocked(sender: string, blockedList: string[]): boolean {
 	if (!sender) return false;
 	const s = sender.toLowerCase().trim();
+	const emailMatch = s.match(/<([^>]+)>/);
+	const emailOnly = emailMatch ? emailMatch[1].toLowerCase().trim() : s;
+
 	return (blockedList || []).some((pattern) => {
 		const p = (pattern || "").toLowerCase().trim();
 		if (!p) return false;
 		if (p.startsWith("@")) {
-			return s.endsWith(p);
+			return emailOnly.endsWith(p) || s.endsWith(p);
 		}
-		return s === p;
+		return emailOnly === p || s === p || s.includes(`<${p}>`);
 	});
 }
 
@@ -561,8 +564,12 @@ app.get("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 	try {
 		const mailboxId = c.req.param("mailboxId")!;
 		const settings = await readMailboxSettings(c.env, mailboxId);
-		const mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		const rawMailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
 		const globalBlocked = await getGlobalBlockedSenders(c.env);
+		// Deduplicate: remove from mailboxBlocked if already in globalBlocked
+		const mailboxBlocked = rawMailboxBlocked.filter(
+			(s) => !globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()),
+		);
 		return c.json({ mailboxBlocked, globalBlocked });
 	} catch (err: any) {
 		console.error("Failed to get blocked senders:", err);
@@ -590,7 +597,16 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 		if (scope === "global") {
 			globalBlocked = await addGlobalBlockedSender(c.env, normalizedSender);
 			const settings = await readMailboxSettings(c.env, mailboxId);
-			mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+			// Clean up redundant mailbox-level block if present
+			if (Array.isArray(settings.blockedSenders) && settings.blockedSenders.includes(normalizedSender)) {
+				settings.blockedSenders = (settings.blockedSenders as string[]).filter(
+					(x) => x.toLowerCase() !== normalizedSender,
+				);
+				await writeMailboxSettings(c.env, mailboxId, settings);
+			}
+			mailboxBlocked = ((settings.blockedSenders as string[]) || []).filter(
+				(s) => !globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()),
+			);
 		} else {
 			const settings = await readMailboxSettings(c.env, mailboxId);
 			const list = Array.isArray(settings.blockedSenders) ? [...(settings.blockedSenders as string[])] : [];
@@ -599,8 +615,10 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 			}
 			settings.blockedSenders = list;
 			await writeMailboxSettings(c.env, mailboxId, settings);
-			mailboxBlocked = list;
 			globalBlocked = await getGlobalBlockedSenders(c.env);
+			mailboxBlocked = list.filter(
+				(s) => !globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()),
+			);
 		}
 
 		let movedCount = 0;

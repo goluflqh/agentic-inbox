@@ -893,10 +893,17 @@ export class MailboxDO extends DurableObject<Env> {
 			   SET folder_id = ?1
 			   WHERE (
 			       LOWER(sender) = ?2
+			       OR LOWER(sender) LIKE '%<' || ?2 || '>%'
+			       OR LOWER(sender) LIKE '%' || ?2 || '%'
 			       OR (
 			           thread_id IN (
 			               SELECT DISTINCT thread_id FROM emails
-			               WHERE LOWER(sender) = ?2 AND thread_id IS NOT NULL
+			               WHERE (
+			                   LOWER(sender) = ?2
+			                   OR LOWER(sender) LIKE '%<' || ?2 || '>%'
+			                   OR LOWER(sender) LIKE '%' || ?2 || '%'
+			               )
+			               AND thread_id IS NOT NULL
 			           )
 			       )
 			   )

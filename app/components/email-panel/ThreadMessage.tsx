@@ -124,13 +124,16 @@ export default function ThreadMessage({
 				description: `Sending unsubscribe request to ${unsub.url.replace(/^mailto:/i, "")}`,
 			});
 		} else {
-			const win = window.open(unsub.url, "_blank", "noopener,noreferrer");
-			if (!win || win.closed || typeof win.closed === "undefined") {
-				window.location.href = unsub.url;
-			}
+			const link = document.createElement("a");
+			link.href = unsub.url;
+			link.target = "_blank";
+			link.rel = "noopener noreferrer";
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
 			toastManager.add({
 				title: "Opening unsubscribe page...",
-				description: "Redirecting to sender's unsubscribe link.",
+				description: "Opened in a new tab.",
 			});
 		}
 	};

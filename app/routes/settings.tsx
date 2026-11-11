@@ -4,7 +4,7 @@
 
 import { Badge, Button, Input, Loader, Select, useKumoToastManager } from "@cloudflare/kumo";
 import { ArrowCounterClockwiseIcon, PlusIcon, ProhibitIcon, RobotIcon, TrashIcon } from "@phosphor-icons/react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
 import { useMailbox, useUpdateMailbox } from "~/queries/mailboxes";
@@ -17,6 +17,7 @@ const PROMPT_PLACEHOLDER = `You are an email assistant that helps manage this in
 export default function SettingsRoute() {
 	const { mailboxId } = useParams<{ mailboxId: string }>();
 	const toastManager = useKumoToastManager();
+	const queryClient = useQueryClient();
 	const { data: mailbox } = useMailbox(mailboxId);
 	const updateMailboxMutation = useUpdateMailbox();
 
@@ -64,19 +65,25 @@ export default function SettingsRoute() {
 
 	const [manualBlockInput, setManualBlockInput] = useState("");
 	const [manualBlockScope, setManualBlockScope] = useState<"mailbox" | "global">("mailbox");
+	const [manualMoveToTrash, setManualMoveToTrash] = useState(true);
 	const [isAddingBlock, setIsAddingBlock] = useState(false);
+	const [cleaningSender, setCleaningSender] = useState<string | null>(null);
 
 	const handleAddBlock = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (!mailboxId || !manualBlockInput.trim()) return;
 		setIsAddingBlock(true);
 		try {
-			await api.blockSender(mailboxId, {
+			const res = await api.blockSender(mailboxId, {
 				sender: manualBlockInput.trim(),
 				scope: manualBlockScope,
-				moveToTrash: false,
+				moveToTrash: manualMoveToTrash,
 			});
-			toastManager.add({ title: `Added ${manualBlockInput.trim()} to blocklist` });
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
+			const movedMsg = res.movedCount > 0 ? ` và đã chuyển ${res.movedCount} thư vào Trash` : "";
+			toastManager.add({ title: `Đã chặn ${manualBlockInput.trim()}${movedMsg}` });
 			setManualBlockInput("");
 			refetchBlocked();
 		} catch {
@@ -86,10 +93,41 @@ export default function SettingsRoute() {
 		}
 	};
 
+	const handleCleanBlockedSender = async (sender: string, scope: "mailbox" | "global") => {
+		if (!mailboxId) return;
+		setCleaningSender(sender);
+		try {
+			const res = await api.blockSender(mailboxId, {
+				sender,
+				scope,
+				moveToTrash: true,
+			});
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["mailboxes"] });
+			toastManager.add({
+				title: `Dọn mail của ${sender} vào Trash thành công`,
+				description: `Đã chuyển ${res.movedCount ?? 0} thư vào Thùng rác.`,
+			});
+			refetchBlocked();
+		} catch (err: any) {
+			toastManager.add({
+				title: "Lỗi dọn mail vào Trash",
+				description: err?.message || "Không thể dọn mail",
+				variant: "error",
+			});
+		} finally {
+			setCleaningSender(null);
+		}
+	};
+
 	const handleUnblock = async (sender: string, scope: "mailbox" | "global") => {
 		if (!mailboxId) return;
 		try {
 			await api.unblockSender(mailboxId, sender, scope);
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
 			toastManager.add({
 				title: scope === "global" ? `Unblocked ${sender} across all accounts` : `Unblocked ${sender}`,
 				description:
@@ -190,34 +228,44 @@ export default function SettingsRoute() {
 					</p>
 
 					{/* Add block form */}
-					<form onSubmit={handleAddBlock} className="flex flex-col sm:flex-row gap-2">
-						<Input
-							placeholder="e.g. spam@domain.com or @spamsite.com"
-							value={manualBlockInput}
-							onChange={(e) => setManualBlockInput(e.target.value)}
-							className="flex-1"
-							size="sm"
-						/>
-						<div className="w-36">
-							<Select
-								value={manualBlockScope}
-								onValueChange={(val) => val && setManualBlockScope(val as "mailbox" | "global")}
+					<form onSubmit={handleAddBlock} className="space-y-2">
+						<div className="flex flex-col sm:flex-row gap-2">
+							<Input
+								placeholder="e.g. spam@domain.com or @spamsite.com"
+								value={manualBlockInput}
+								onChange={(e) => setManualBlockInput(e.target.value)}
+								className="flex-1"
 								size="sm"
+							/>
+							<div className="w-36">
+								<Select
+									value={manualBlockScope}
+									onValueChange={(val) => val && setManualBlockScope(val as "mailbox" | "global")}
+									size="sm"
+								>
+									<Select.Option value="mailbox">This mailbox</Select.Option>
+									<Select.Option value="global">All mailboxes</Select.Option>
+								</Select>
+							</div>
+							<Button
+								type="submit"
+								variant="secondary"
+								size="sm"
+								icon={<PlusIcon size={14} />}
+								loading={isAddingBlock}
+								disabled={!manualBlockInput.trim()}
 							>
-								<Select.Option value="mailbox">This mailbox</Select.Option>
-								<Select.Option value="global">All mailboxes</Select.Option>
-							</Select>
+								Block
+							</Button>
 						</div>
-						<Button
-							type="submit"
-							variant="secondary"
-							size="sm"
-							icon={<PlusIcon size={14} />}
-							loading={isAddingBlock}
-							disabled={!manualBlockInput.trim()}
-						>
-							Block
-						</Button>
+						<label className="flex items-center gap-2 text-xs text-kumo-subtle cursor-pointer">
+							<input
+								type="checkbox"
+								checked={manualMoveToTrash}
+								onChange={(e) => setManualMoveToTrash(e.target.checked)}
+							/>
+							<span>Chuyển tất cả email cũ của người gửi này vào <strong>Thùng rác</strong></span>
+						</label>
 					</form>
 
 					{/* Blocked List */}
@@ -234,40 +282,62 @@ export default function SettingsRoute() {
 											<span className="font-mono text-kumo-default truncate">{sender}</span>
 											<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10">All mailboxes (Global)</Badge>
 										</div>
-										<Button
-											variant="secondary"
-											size="xs"
-											onClick={() => handleUnblock(sender, "global")}
-										>
-											Unblock for all accounts
-										</Button>
-									</div>
-								))}
-								{blockedData.mailboxBlocked.map((sender) => (
-									<div key={`mb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
-										<div className="flex items-center gap-2 min-w-0">
-											<span className="font-mono text-kumo-default truncate">{sender}</span>
-											<Badge variant="secondary" className="text-[10px]">This mailbox only</Badge>
-										</div>
 										<div className="flex items-center gap-1.5">
 											<Button
-												variant="ghost"
+												variant="outline"
 												size="xs"
-												onClick={() => handleUnblock(sender, "mailbox")}
+												onClick={() => handleCleanBlockedSender(sender, "global")}
+												loading={cleaningSender === sender}
+												title="Dọn sạch toàn bộ email cũ từ người gửi này vào Thùng rác"
 											>
-												Unblock
+												Dọn mail cũ vào Trash
 											</Button>
 											<Button
 												variant="secondary"
 												size="xs"
 												onClick={() => handleUnblock(sender, "global")}
-												title="Unblock across all accounts in this system"
 											>
-												Unblock Everywhere
+												Unblock for all accounts
 											</Button>
 										</div>
 									</div>
 								))}
+								{(blockedData.mailboxBlocked || [])
+									.filter((s) => !blockedData.globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()))
+									.map((sender) => (
+										<div key={`mb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
+											<div className="flex items-center gap-2 min-w-0">
+												<span className="font-mono text-kumo-default truncate">{sender}</span>
+												<Badge variant="secondary" className="text-[10px]">This mailbox only</Badge>
+											</div>
+											<div className="flex items-center gap-1.5">
+												<Button
+													variant="outline"
+													size="xs"
+													onClick={() => handleCleanBlockedSender(sender, "mailbox")}
+													loading={cleaningSender === sender}
+													title="Dọn sạch toàn bộ email cũ từ người gửi này vào Thùng rác"
+												>
+													Dọn mail cũ vào Trash
+												</Button>
+												<Button
+													variant="ghost"
+													size="xs"
+													onClick={() => handleUnblock(sender, "mailbox")}
+												>
+													Unblock
+												</Button>
+												<Button
+													variant="secondary"
+													size="xs"
+													onClick={() => handleUnblock(sender, "global")}
+													title="Unblock across all accounts in this system"
+												>
+													Unblock Everywhere
+												</Button>
+											</div>
+										</div>
+									))}
 							</div>
 						)}
 					</div>

@@ -3,9 +3,10 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import { Button, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
-import { ArrowSquareOutIcon, ProhibitIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon, ProhibitIcon, TrashIcon } from "@phosphor-icons/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { Folders } from "shared/folders";
 import BlockSenderDialog from "~/components/BlockSenderDialog";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
 import EmailIframe from "~/components/EmailIframe";
@@ -73,14 +74,46 @@ export default function SingleMessageView({
 				description: `Sending unsubscribe request to ${unsub.url.replace(/^mailto:/i, "")}`,
 			});
 		} else {
-			const win = window.open(unsub.url, "_blank", "noopener,noreferrer");
-			if (!win || win.closed || typeof win.closed === "undefined") {
-				window.location.href = unsub.url;
-			}
+			const link = document.createElement("a");
+			link.href = unsub.url;
+			link.target = "_blank";
+			link.rel = "noopener noreferrer";
+			document.body.appendChild(link);
+			link.click();
+			document.body.removeChild(link);
 			toastManager.add({
 				title: "Opening unsubscribe page...",
-				description: "Redirecting to sender's unsubscribe link.",
+				description: "Opened in a new tab.",
 			});
+		}
+	};
+
+	const [isCleaning, setIsCleaning] = useState(false);
+	const handleCleanSenderToTrash = async () => {
+		if (!mailboxId) return;
+		setIsCleaning(true);
+		try {
+			const res = await api.blockSender(mailboxId, {
+				sender: senderNormalized,
+				scope: isGlobalBlocked ? "global" : "mailbox",
+				moveToTrash: true,
+			});
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["mailboxes"] });
+			toastManager.add({
+				title: "Moved emails to Trash",
+				description: `Moved ${res.movedCount ?? 0} conversation(s) from ${senderNormalized} to Trash.`,
+			});
+		} catch (err: any) {
+			toastManager.add({
+				title: "Failed to move emails to Trash",
+				description: err?.message || "An unexpected error occurred",
+				variant: "error",
+			});
+		} finally {
+			setIsCleaning(false);
 		}
 	};
 
@@ -115,20 +148,35 @@ export default function SingleMessageView({
 						)}
 						{mailboxId && (
 							isBlocked ? (
-								<Tooltip
-									content={isGlobalBlocked ? "Unblock this sender across all accounts" : `Unblock this sender for ${mailboxId}`}
-									side="bottom"
-									asChild
-								>
-									<Button
-										variant="secondary"
-										size="sm"
-										icon={<ProhibitIcon size={14} className="text-kumo-warning" />}
-										onClick={handleUnblock}
+								<>
+									<Tooltip
+										content={isGlobalBlocked ? "Unblock this sender across all accounts" : `Unblock this sender for ${mailboxId}`}
+										side="bottom"
+										asChild
 									>
-										{isGlobalBlocked ? "Unblock All Accounts" : "Unblock"}
-									</Button>
-								</Tooltip>
+										<Button
+											variant="secondary"
+											size="sm"
+											icon={<ProhibitIcon size={14} className="text-kumo-warning" />}
+											onClick={handleUnblock}
+										>
+											{isGlobalBlocked ? "Unblock All Accounts" : "Unblock"}
+										</Button>
+									</Tooltip>
+									{email.folder_id !== Folders.TRASH && (
+										<Tooltip content="Chuyển toàn bộ email cũ từ người gửi này vào Thùng rác" side="bottom" asChild>
+											<Button
+												variant="secondary-destructive"
+												size="sm"
+												icon={<TrashIcon size={14} />}
+												onClick={handleCleanSenderToTrash}
+												loading={isCleaning}
+											>
+												Dọn vào Trash
+											</Button>
+										</Tooltip>
+									)}
+								</>
 							) : (
 								<Tooltip content={`Block ${email.sender}`} side="bottom" asChild>
 									<Button
@@ -149,6 +197,26 @@ export default function SingleMessageView({
 				</div>
 				<EmailQuickActions email={email} className="mt-3" />
 			</div>
+
+			{isBlocked && email.folder_id !== Folders.TRASH && (
+				<div className="flex items-center justify-between px-4 py-2.5 bg-kumo-warning/10 border-b border-kumo-warning/30 text-xs">
+					<div className="flex items-center gap-2 text-kumo-warning font-medium">
+						<ProhibitIcon size={16} />
+						<span>
+							Người gửi này đã bị chặn{isGlobalBlocked ? " trên tất cả tài khoản" : ""}, nhưng thư cũ vẫn còn trong Inbox.
+						</span>
+					</div>
+					<Button
+						variant="destructive"
+						size="xs"
+						icon={<TrashIcon size={12} />}
+						onClick={handleCleanSenderToTrash}
+						loading={isCleaning}
+					>
+						Chuyển tất cả vào Thùng rác
+					</Button>
+				</div>
+			)}
 
 			<div className="flex-1 min-h-0">
 				<EmailIframe
