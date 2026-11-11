@@ -146,12 +146,12 @@ function isSenderBlocked(sender: string, blockedList: string[]): boolean {
 			return true;
 		}
 		// Plus-addressing support (e.g. failed-payments+acct_xxx@stripe.com)
-		if (emailOnly.includes("+") && p.includes("@")) {
+		if (emailOnly.includes("@") && p.includes("@")) {
 			const [local, dom] = emailOnly.split("@");
 			const baseLocal = local.split("+")[0];
 			const [pLocal, pDom] = p.split("@");
 			const pBaseLocal = pLocal.split("+")[0];
-			if (dom === pDom && baseLocal === pBaseLocal) {
+			if (dom === pDom && baseLocal === pBaseLocal && (local.includes("+") || pLocal.includes("+"))) {
 				return true;
 			}
 		}

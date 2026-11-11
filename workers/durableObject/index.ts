@@ -903,107 +903,114 @@ export class MailboxDO extends DurableObject<Env> {
 		const targetFolder = (targetFolderId || "trash").toLowerCase().trim();
 
 		const folderRow = [...this.ctx.storage.sql.exec(
-			`SELECT id FROM folders WHERE LOWER(id) = ?1 OR LOWER(name) = ?1 LIMIT 1`,
+			`SELECT id FROM folders WHERE LOWER(id) = ? OR LOWER(name) = ? LIMIT 1`,
+			targetFolder,
 			targetFolder,
 		)][0] as { id: string } | undefined;
 
 		const destFolderId = folderRow?.id || targetFolder || "trash";
 
-		let candidateIds: string[] = [];
+		const candidateIdSet = new Set<string>();
+		const threadIdSet = new Set<string>();
 
 		if (isDomain) {
 			const domainPattern = "%" + s;
 			const rows = [...this.ctx.storage.sql.exec(
-				`SELECT id FROM emails
-				 WHERE folder_id != ?1
+				`SELECT id, thread_id FROM emails
+				 WHERE LOWER(folder_id) != LOWER(?)
 				 AND (
-					LOWER(sender) LIKE ?2
-					OR thread_id IN (
-						SELECT DISTINCT thread_id FROM emails
-						WHERE LOWER(sender) LIKE ?2 AND thread_id IS NOT NULL
-					)
+					LOWER(sender) LIKE ?
+					OR LOWER(sender) LIKE ?
 				 )`,
 				destFolderId,
 				domainPattern,
-			)] as { id: string }[];
-			candidateIds = rows.map((r) => r.id);
+				`%<${domainPattern}>%`,
+			)] as { id: string; thread_id: string | null }[];
+
+			for (const r of rows) {
+				candidateIdSet.add(r.id);
+				if (r.thread_id) threadIdSet.add(r.thread_id);
+			}
 		} else if (s) {
 			const pExact = s;
 			const pBracket = `%<${s}>%`;
 			const pSub = `%${s}%`;
 
-			// Check for plus addressing (e.g. failed-payments+acct_xxx@stripe.com)
 			let pPlus = pSub;
-			let pBase = pSub;
-			if (s.includes("+")) {
-				const [localPart, domainPart] = s.split("@");
-				const baseLocal = localPart.split("+")[0];
-				if (domainPart) {
-					pPlus = `%${baseLocal}+%@${domainPart}%`;
-					pBase = `%${baseLocal}@${domainPart}%`;
+			let pLocal = pSub;
+			if (s.includes("@")) {
+				const [local, dom] = s.split("@");
+				if (local.includes("+")) {
+					pLocal = `%${local}%`;
+					const baseLocal = local.split("+")[0];
+					pPlus = dom ? `%${baseLocal}+%@${dom}%` : `%${baseLocal}+%`;
 				}
 			}
 
 			const rows = [...this.ctx.storage.sql.exec(
-				`SELECT id FROM emails
-				 WHERE folder_id != ?1
+				`SELECT id, thread_id FROM emails
+				 WHERE LOWER(folder_id) != LOWER(?)
 				 AND (
-					LOWER(sender) = ?2
-					OR LOWER(sender) LIKE ?3
-					OR LOWER(sender) LIKE ?4
-					OR LOWER(sender) LIKE ?5
-					OR LOWER(sender) LIKE ?6
-					OR thread_id IN (
-						SELECT DISTINCT thread_id FROM emails
-						WHERE (
-							LOWER(sender) = ?2
-							OR LOWER(sender) LIKE ?3
-							OR LOWER(sender) LIKE ?4
-							OR LOWER(sender) LIKE ?5
-							OR LOWER(sender) LIKE ?6
-						)
-						AND thread_id IS NOT NULL
-					)
+					LOWER(sender) = ?
+					OR LOWER(sender) LIKE ?
+					OR LOWER(sender) LIKE ?
+					OR LOWER(sender) LIKE ?
+					OR LOWER(sender) LIKE ?
 				 )`,
 				destFolderId,
 				pExact,
 				pBracket,
 				pSub,
+				pLocal,
 				pPlus,
-				pBase,
-			)] as { id: string }[];
-			candidateIds = rows.map((r) => r.id);
-		}
+			)] as { id: string; thread_id: string | null }[];
 
-		if (fallbackEmailId && !candidateIds.includes(fallbackEmailId)) {
-			const fallbackRow = [...this.ctx.storage.sql.exec(
-				`SELECT id, thread_id FROM emails WHERE id = ?1 AND folder_id != ?2 LIMIT 1`,
-				fallbackEmailId,
-				destFolderId,
-			)][0] as { id: string; thread_id: string | null } | undefined;
-
-			if (fallbackRow) {
-				candidateIds.push(fallbackRow.id);
-				if (fallbackRow.thread_id) {
-					const threadRows = [...this.ctx.storage.sql.exec(
-						`SELECT id FROM emails WHERE thread_id = ?1 AND folder_id != ?2`,
-						fallbackRow.thread_id,
-						destFolderId,
-					)] as { id: string }[];
-					for (const tr of threadRows) {
-						if (!candidateIds.includes(tr.id)) {
-							candidateIds.push(tr.id);
-						}
-					}
-				}
+			for (const r of rows) {
+				candidateIdSet.add(r.id);
+				if (r.thread_id) threadIdSet.add(r.thread_id);
 			}
 		}
 
+		if (fallbackEmailId) {
+			const fallbackRows = [...this.ctx.storage.sql.exec(
+				`SELECT id, thread_id FROM emails WHERE id = ? AND LOWER(folder_id) != LOWER(?) LIMIT 1`,
+				fallbackEmailId,
+				destFolderId,
+			)] as { id: string; thread_id: string | null }[];
+
+			for (const fb of fallbackRows) {
+				candidateIdSet.add(fb.id);
+				if (fb.thread_id) threadIdSet.add(fb.thread_id);
+			}
+		}
+
+		// Also collect any thread replies for all matched thread_ids
+		for (const tid of threadIdSet) {
+			const tRows = [...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails WHERE thread_id = ? AND LOWER(folder_id) != LOWER(?)`,
+				tid,
+				destFolderId,
+			)] as { id: string }[];
+			for (const tr of tRows) {
+				candidateIdSet.add(tr.id);
+			}
+		}
+
+		const candidateIds = Array.from(candidateIdSet);
 		if (candidateIds.length === 0) {
+			console.log(`[moveEmailsBySender] 0 candidates found for sender: "${sender}", s: "${s}", fallbackEmailId: "${fallbackEmailId}"`);
 			return 0;
 		}
 
-		await this.moveEmails(candidateIds, destFolderId);
+		// Direct UPDATE on emails table
+		for (const id of candidateIds) {
+			[...this.ctx.storage.sql.exec(
+				`UPDATE emails SET folder_id = ? WHERE id = ?`,
+				destFolderId,
+				id,
+			)];
+		}
+
 		console.log(`[moveEmailsBySender] successfully moved ${candidateIds.length} email(s) to ${destFolderId} for ${sender}`);
 		return candidateIds.length;
 	}
