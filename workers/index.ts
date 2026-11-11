@@ -281,7 +281,7 @@ app.get("/api/v1/all-emails", async (c) => {
 		return c.json({ error: "Invalid date range" }, 400);
 	}
 	const page = Math.max(intQuery(c as AppContext, "page") || 1, 1);
-	const limit = Math.min(Math.max(intQuery(c as AppContext, "limit") || 25, 1), 100);
+	const limit = Math.min(Math.max(intQuery(c as AppContext, "limit") || 25, 1), 250);
 	const fetchLimit = page * limit;
 	// Bound cross-mailbox fan-out; deeper pagination needs a cursor-based merge.
 	if (fetchLimit > 1000) return c.json({ error: "All-inbox pagination is limited to the first 1000 results. Narrow your search or select a mailbox." }, 400);

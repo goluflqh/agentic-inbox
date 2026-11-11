@@ -132,6 +132,27 @@ export default function AllEmailListRoute() {
 	const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
 	const [selectedMailbox, setSelectedMailbox] = useState<{ id: string; mailboxId: string } | null>(null);
 	const [searchParams, setSearchParams] = useSearchParams();
+	const [pageSize, setPageSize] = useState<number>(() => {
+		const paramLimit = Number(searchParams.get("limit"));
+		if (Number.isSafeInteger(paramLimit) && paramLimit > 0) return Math.min(paramLimit, 250);
+		if (typeof window !== "undefined") {
+			const saved = Number(localStorage.getItem("emails_page_size"));
+			if (Number.isSafeInteger(saved) && saved > 0) return Math.min(saved, 250);
+		}
+		return 50;
+	});
+
+	const handlePageSizeChange = (newSize: number) => {
+		setPageSize(newSize);
+		if (typeof window !== "undefined") {
+			localStorage.setItem("emails_page_size", String(newSize));
+		}
+		const params = new URLSearchParams(searchParams);
+		params.delete("page");
+		params.set("limit", String(newSize));
+		setSearchParams(params);
+	};
+
 	const pageValue = Number(searchParams.get("page"));
 	const page = Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : 1;
 	const setPage = (nextPage: number) => {
@@ -191,7 +212,7 @@ export default function AllEmailListRoute() {
 		const next: Record<string, string> = {
 			folder: folder || Folders.INBOX,
 			page: String(page),
-			limit: String(PAGE_SIZE),
+			limit: String(pageSize),
 		};
 		if (domain !== "all") next.domain = domain;
 		if (status !== "all") next.status = status;
@@ -199,7 +220,7 @@ export default function AllEmailListRoute() {
 		if (dateBounds?.start) next.date_start = dateBounds.start;
 		if (dateBounds?.end) next.date_end = dateBounds.end;
 		return next;
-	}, [domain, folder, page, q, status, dateFrom, dateTo]);
+	}, [domain, folder, page, pageSize, q, status, dateFrom, dateTo]);
 
 	const { data: emailData, isFetching: isRefreshing, isError } = useAllEmails(params, {
 		enabled: dateBounds !== null,
@@ -890,17 +911,41 @@ export default function AllEmailListRoute() {
 				)}
 			</div>
 
-			{totalCount > PAGE_SIZE && (
-				<div className="flex flex-col items-center gap-1 py-3 border-t border-kumo-line shrink-0">
-					<Pagination
-						page={page}
-						setPage={setPage}
-						perPage={PAGE_SIZE}
-						totalCount={Math.min(totalCount, 1000)}
-					/>
-					{totalCount > 1000 && <span className="text-xs text-kumo-subtle">Showing the first 1,000 results. Narrow your search to see more.</span>}
+			<div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-t border-kumo-line bg-kumo-base shrink-0">
+				<div className="flex items-center gap-1.5 text-xs text-kumo-subtle">
+					<span>Hiển thị:</span>
+					{[25, 50, 100, 200].map((size) => (
+						<button
+							key={size}
+							type="button"
+							onClick={() => handlePageSizeChange(size)}
+							className={`px-2 py-0.5 rounded text-xs transition-colors ${
+								pageSize === size
+									? "bg-kumo-fill font-semibold text-kumo-default border border-kumo-line"
+									: "hover:bg-kumo-tint text-kumo-subtle hover:text-kumo-default"
+							}`}
+						>
+							{size}
+						</button>
+					))}
+					<span>thư / trang</span>
 				</div>
-			)}
+				{totalCount > pageSize && (
+					<div className="flex flex-col items-center gap-1">
+						<Pagination
+							page={page}
+							setPage={setPage}
+							perPage={pageSize}
+							totalCount={Math.min(totalCount, 1000)}
+						/>
+						{totalCount > 1000 && (
+							<span className="text-[10px] text-kumo-subtle">
+								Showing the first 1,000 results. Narrow your search to see more.
+							</span>
+						)}
+					</div>
+				)}
+			</div>
 
 			<KeyboardShortcutsDialog
 				open={isShortcutsOpen}

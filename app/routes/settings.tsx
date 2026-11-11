@@ -185,7 +185,7 @@ export default function SettingsRoute() {
 	const isCustomPrompt = agentPrompt.trim().length > 0;
 
 	return (
-		<div className="max-w-2xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
+		<div className="w-full max-w-5xl px-4 py-4 md:px-8 md:py-6 h-full overflow-y-auto">
 			<h1 className="text-lg font-semibold text-kumo-default mb-6">Settings</h1>
 
 			<div className="space-y-6">
@@ -314,16 +314,16 @@ export default function SettingsRoute() {
 										(a) => a.toLowerCase() === sender.toLowerCase(),
 									);
 									return (
-										<div key={`gb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
-											<div className="flex items-center gap-2 min-w-0">
-												<span className="font-mono text-kumo-default truncate">{sender}</span>
+										<div key={`gb-${sender}`} className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 px-3.5 py-2.5 text-xs">
+											<div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
+												<span className="font-mono text-kumo-default font-medium break-all select-all">{sender}</span>
 												{isAllowedForThis ? (
-													<Badge variant="primary" className="text-[10px]">Đã mở chặn riêng tài khoản này</Badge>
+													<Badge variant="primary" className="text-[10px] shrink-0">Đã mở riêng acc này</Badge>
 												) : (
-													<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10">All mailboxes (Global)</Badge>
+													<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10 shrink-0">All mailboxes (Global)</Badge>
 												)}
 											</div>
-											<div className="flex items-center gap-1.5">
+											<div className="flex flex-wrap items-center gap-1.5 shrink-0">
 												<Button
 													variant="outline"
 													size="xs"
@@ -367,12 +367,12 @@ export default function SettingsRoute() {
 								{(blockedData.mailboxBlocked || [])
 									.filter((s) => !blockedData.globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()))
 									.map((sender) => (
-										<div key={`mb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
-											<div className="flex items-center gap-2 min-w-0">
-												<span className="font-mono text-kumo-default truncate">{sender}</span>
-												<Badge variant="secondary" className="text-[10px]">This mailbox only</Badge>
+										<div key={`mb-${sender}`} className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 px-3.5 py-2.5 text-xs">
+											<div className="flex items-center gap-2 min-w-0 flex-1 flex-wrap">
+												<span className="font-mono text-kumo-default font-medium break-all select-all">{sender}</span>
+												<Badge variant="secondary" className="text-[10px] shrink-0">This mailbox only</Badge>
 											</div>
-											<div className="flex items-center gap-1.5">
+											<div className="flex flex-wrap items-center gap-1.5 shrink-0">
 												<Button
 													variant="outline"
 													size="xs"
