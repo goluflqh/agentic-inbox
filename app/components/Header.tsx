@@ -4,7 +4,7 @@
 
 import { Button, Input, Tooltip } from "@cloudflare/kumo";
 import { GearSixIcon, GlobeHemisphereWestIcon, ListIcon, MagnifyingGlassIcon, RobotIcon, XIcon } from "@phosphor-icons/react";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { useUIStore } from "~/hooks/useUIStore";
 
@@ -41,7 +41,10 @@ export default function Header() {
 		}
 	};
 
-	const handleKeyDown = (e: KeyboardEvent) => {
+	const isComposingRef = useRef(false);
+
+	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.nativeEvent.isComposing || isComposingRef.current) return;
 		if (e.key === "Enter") {
 			performSearch();
 		}
@@ -82,6 +85,13 @@ export default function Header() {
 						placeholder="Search emails... (try from:name, is:unread, has:attachment)"
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
+						onCompositionStart={() => {
+							isComposingRef.current = true;
+						}}
+						onCompositionEnd={(e) => {
+							isComposingRef.current = false;
+							setSearchQuery(e.currentTarget.value);
+						}}
 						onKeyDown={handleKeyDown}
 						disabled={!hasMailboxContext}
 					/>

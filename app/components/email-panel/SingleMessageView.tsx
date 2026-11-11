@@ -143,6 +143,7 @@ export default function SingleMessageView({
 			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
 			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
 			queryClient.invalidateQueries({ queryKey: ["mailboxes"] });
+			queryClient.invalidateQueries({ queryKey: ["email", mailboxId, email.id] });
 			toastManager.add({
 				title: "Moved emails to Trash",
 				description: `Moved ${res.movedCount ?? 0} conversation(s) from ${senderNormalized} to Trash.`,

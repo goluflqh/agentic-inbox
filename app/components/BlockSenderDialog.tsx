@@ -48,6 +48,7 @@ export default function BlockSenderDialog({
 			queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
 			queryClient.invalidateQueries({ queryKey: queryKeys.mailboxes.detail(mailboxId) });
 			queryClient.invalidateQueries({ queryKey: ["blocked-senders", mailboxId] });
+			if (emailId) queryClient.invalidateQueries({ queryKey: ["email", mailboxId, emailId] });
 
 			const movedCount = res.movedCount || 0;
 			const affectedMailboxCount = Object.keys(res.mailboxCounts || {}).length;

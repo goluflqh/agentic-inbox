@@ -70,6 +70,14 @@ export default function HomeRoute() {
 	const [newName, setNewName] = useState("");
 	const domainFilter = searchParams.get("domain") || "all";
 	const mailboxSearch = searchParams.get("mailbox") || "";
+	const [mailboxInput, setMailboxInput] = useState(mailboxSearch);
+	const isMailboxComposingRef = useRef(false);
+	const isEmailComposingRef = useRef(false);
+
+	useEffect(() => {
+		setMailboxInput(mailboxSearch);
+	}, [mailboxSearch]);
+
 	const setMailboxFilter = (key: "domain" | "mailbox", value: string) => {
 		const params = new URLSearchParams(searchParams);
 		params.delete("page");
@@ -77,6 +85,16 @@ export default function HomeRoute() {
 		else params.set(key, value);
 		setSearchParams(params, { replace: key === "mailbox" });
 	};
+
+	useEffect(() => {
+		if (isMailboxComposingRef.current) return;
+		const timer = setTimeout(() => {
+			if (mailboxInput !== mailboxSearch) {
+				setMailboxFilter("mailbox", mailboxInput);
+			}
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [mailboxInput, mailboxSearch]);
 	const pageValue = Number(searchParams.get("page"));
 	const mailboxPage = Number.isSafeInteger(pageValue) && pageValue > 0 ? pageValue : 1;
 	const setMailboxPage = (page: number) => {
@@ -258,7 +276,22 @@ export default function HomeRoute() {
 							state: { from: `${location.pathname}${location.search}` },
 						});
 					}}>
-						<div className="min-w-0 flex-1"><Input aria-label="Search email content" placeholder="Search email sender, subject or content" size="sm" value={emailSearch} onChange={(event) => setEmailSearch(event.target.value)} /></div>
+						<div className="min-w-0 flex-1">
+							<Input
+								aria-label="Search email content"
+								placeholder="Search email sender, subject or content"
+								size="sm"
+								value={emailSearch}
+								onChange={(event) => setEmailSearch(event.target.value)}
+								onCompositionStart={() => {
+									isEmailComposingRef.current = true;
+								}}
+								onCompositionEnd={(event) => {
+									isEmailComposingRef.current = false;
+									setEmailSearch(event.currentTarget.value);
+								}}
+							/>
+						</div>
 						<Button type="submit" variant="secondary" size="sm">Search emails</Button>
 					</form>
 					<div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,16rem)]">
@@ -266,8 +299,21 @@ export default function HomeRoute() {
 							aria-label="Search mailboxes"
 							placeholder="Search mailboxes"
 							size="sm"
-							value={mailboxSearch}
-							onChange={(event) => setMailboxFilter("mailbox", event.target.value)}
+							value={mailboxInput}
+							onChange={(event) => setMailboxInput(event.target.value)}
+							onCompositionStart={() => {
+								isMailboxComposingRef.current = true;
+							}}
+							onCompositionEnd={(event) => {
+								isMailboxComposingRef.current = false;
+								setMailboxInput(event.currentTarget.value);
+								setMailboxFilter("mailbox", event.currentTarget.value);
+							}}
+							onKeyDown={(event) => {
+								if (event.key === "Enter") {
+									setMailboxFilter("mailbox", mailboxInput);
+								}
+							}}
 						/>
 						{domains.length > 1 && (
 							<Select

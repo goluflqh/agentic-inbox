@@ -4,7 +4,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { drizzle } from "drizzle-orm/durable-sqlite";
-import { eq, and, or, asc, desc, sql, inArray } from "drizzle-orm";
+import { eq, ne, and, or, asc, desc, sql, inArray } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
@@ -902,97 +902,90 @@ export class MailboxDO extends DurableObject<Env> {
 		const isDomain = s.startsWith("@");
 		const targetFolder = (targetFolderId || "trash").toLowerCase().trim();
 
-		const folderRow = [...this.ctx.storage.sql.exec(
-			`SELECT id FROM folders WHERE LOWER(id) = ? OR LOWER(name) = ? LIMIT 1`,
-			targetFolder,
-			targetFolder,
-		)][0] as { id: string } | undefined;
+		// Resolve destination folder ID
+		const folder = this.db
+			.select({ id: schema.folders.id })
+			.from(schema.folders)
+			.where(or(
+				eq(sql`LOWER(${schema.folders.id})`, targetFolder),
+				eq(sql`LOWER(${schema.folders.name})`, targetFolder),
+			))
+			.limit(1)
+			.get();
 
-		const destFolderId = folderRow?.id || targetFolder || "trash";
+		const destFolderId = folder?.id || targetFolder || "trash";
+
+		// Fetch all emails not already in destination folder
+		const nonDestEmails = this.db
+			.select({
+				id: schema.emails.id,
+				sender: schema.emails.sender,
+				thread_id: schema.emails.thread_id,
+				folder_id: schema.emails.folder_id,
+			})
+			.from(schema.emails)
+			.where(ne(sql`LOWER(${schema.emails.folder_id})`, destFolderId.toLowerCase()))
+			.all();
+
+		if (!nonDestEmails.length) {
+			console.log(`[moveEmailsBySender] 0 non-trash emails in mailbox for sender: "${sender}"`);
+			return 0;
+		}
+
+		const [local, dom] = s.includes("@") ? s.split("@") : [s, ""];
+		const baseLocal = local.split("+")[0];
 
 		const candidateIdSet = new Set<string>();
-		const threadIdSet = new Set<string>();
+		const matchedThreadSet = new Set<string>();
 
-		if (isDomain) {
-			const domainPattern = "%" + s;
-			const rows = [...this.ctx.storage.sql.exec(
-				`SELECT id, thread_id FROM emails
-				 WHERE LOWER(folder_id) != LOWER(?)
-				 AND (
-					LOWER(sender) LIKE ?
-					OR LOWER(sender) LIKE ?
-				 )`,
-				destFolderId,
-				domainPattern,
-				`%<${domainPattern}>%`,
-			)] as { id: string; thread_id: string | null }[];
+		for (const em of nonDestEmails) {
+			let matched = false;
+			if (fallbackEmailId && em.id === fallbackEmailId) {
+				matched = true;
+			} else {
+				const emSender = (em.sender || "").toLowerCase().trim();
+				const emMatch = emSender.match(/<([^>]+)>/);
+				const emEmail = emMatch ? emMatch[1].toLowerCase().trim() : emSender;
 
-			for (const r of rows) {
-				candidateIdSet.add(r.id);
-				if (r.thread_id) threadIdSet.add(r.thread_id);
-			}
-		} else if (s) {
-			const pExact = s;
-			const pBracket = `%<${s}>%`;
-			const pSub = `%${s}%`;
-
-			let pPlus = pSub;
-			let pLocal = pSub;
-			if (s.includes("@")) {
-				const [local, dom] = s.split("@");
-				if (local.includes("+")) {
-					pLocal = `%${local}%`;
-					const baseLocal = local.split("+")[0];
-					pPlus = dom ? `%${baseLocal}+%@${dom}%` : `%${baseLocal}+%`;
+				if (isDomain) {
+					matched = emEmail.endsWith(s) || emSender.endsWith(s);
+				} else if (s) {
+					// 1. Exact match
+					if (emSender === s || emEmail === s) {
+						matched = true;
+					}
+					// 2. Bracket or substring match
+					else if (emSender.includes(`<${s}>`) || emSender.includes(s) || emEmail.includes(s)) {
+						matched = true;
+					}
+					// 3. Plus-addressing matching:
+					// If target sender has '+', match full local part token or base prefix
+					else if (local.includes("+") && (emSender.includes(local) || emEmail.includes(local))) {
+						matched = true;
+					}
+					// 4. Same domain and base local part
+					else if (dom && (emEmail.includes("@") || emSender.includes("@"))) {
+						const [emLocal, emDom] = (emEmail.includes("@") ? emEmail : emSender).split("@");
+						const emBase = emLocal.split("+")[0];
+						if (emDom === dom && emBase === baseLocal) {
+							matched = true;
+						}
+					}
 				}
 			}
 
-			const rows = [...this.ctx.storage.sql.exec(
-				`SELECT id, thread_id FROM emails
-				 WHERE LOWER(folder_id) != LOWER(?)
-				 AND (
-					LOWER(sender) = ?
-					OR LOWER(sender) LIKE ?
-					OR LOWER(sender) LIKE ?
-					OR LOWER(sender) LIKE ?
-					OR LOWER(sender) LIKE ?
-				 )`,
-				destFolderId,
-				pExact,
-				pBracket,
-				pSub,
-				pLocal,
-				pPlus,
-			)] as { id: string; thread_id: string | null }[];
-
-			for (const r of rows) {
-				candidateIdSet.add(r.id);
-				if (r.thread_id) threadIdSet.add(r.thread_id);
-			}
-		}
-
-		if (fallbackEmailId) {
-			const fallbackRows = [...this.ctx.storage.sql.exec(
-				`SELECT id, thread_id FROM emails WHERE id = ? AND LOWER(folder_id) != LOWER(?) LIMIT 1`,
-				fallbackEmailId,
-				destFolderId,
-			)] as { id: string; thread_id: string | null }[];
-
-			for (const fb of fallbackRows) {
-				candidateIdSet.add(fb.id);
-				if (fb.thread_id) threadIdSet.add(fb.thread_id);
+			if (matched) {
+				candidateIdSet.add(em.id);
+				if (em.thread_id) matchedThreadSet.add(em.thread_id);
 			}
 		}
 
 		// Also collect any thread replies for all matched thread_ids
-		for (const tid of threadIdSet) {
-			const tRows = [...this.ctx.storage.sql.exec(
-				`SELECT id FROM emails WHERE thread_id = ? AND LOWER(folder_id) != LOWER(?)`,
-				tid,
-				destFolderId,
-			)] as { id: string }[];
-			for (const tr of tRows) {
-				candidateIdSet.add(tr.id);
+		if (matchedThreadSet.size > 0) {
+			for (const em of nonDestEmails) {
+				if (em.thread_id && matchedThreadSet.has(em.thread_id)) {
+					candidateIdSet.add(em.id);
+				}
 			}
 		}
 
@@ -1002,13 +995,15 @@ export class MailboxDO extends DurableObject<Env> {
 			return 0;
 		}
 
-		// Direct UPDATE on emails table
-		for (const id of candidateIds) {
-			[...this.ctx.storage.sql.exec(
-				`UPDATE emails SET folder_id = ? WHERE id = ?`,
-				destFolderId,
-				id,
-			)];
+		// Direct batch update using Drizzle in chunks of 50
+		const CHUNK_SIZE = 50;
+		for (let i = 0; i < candidateIds.length; i += CHUNK_SIZE) {
+			const chunk = candidateIds.slice(i, i + CHUNK_SIZE);
+			this.db
+				.update(schema.emails)
+				.set({ folder_id: destFolderId })
+				.where(inArray(schema.emails.id, chunk))
+				.run();
 		}
 
 		console.log(`[moveEmailsBySender] successfully moved ${candidateIds.length} email(s) to ${destFolderId} for ${sender}`);

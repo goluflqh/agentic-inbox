@@ -202,10 +202,13 @@ export default function EmailListRoute() {
 	const statusParam = searchParams.get("status");
 	const status = statusParam === "unread" || statusParam === "starred" ? statusParam : "all";
 	const q = searchParams.get("q") || "";
+	const isSearchComposingRef = useRef(false);
 	const [searchInput, setSearchInput] = useState(q);
 
 	useEffect(() => {
-		setSearchInput(q);
+		if (!isSearchComposingRef.current) {
+			setSearchInput(q);
+		}
 	}, [q]);
 
 	const setFilter = (next: { status?: "all" | "unread" | "starred"; q?: string }) => {
@@ -596,6 +599,18 @@ export default function EmailListRoute() {
 								size="sm"
 								value={searchInput}
 								onChange={(event) => setSearchInput(event.target.value)}
+								onCompositionStart={() => {
+									isSearchComposingRef.current = true;
+								}}
+								onCompositionEnd={(event) => {
+									isSearchComposingRef.current = false;
+									setSearchInput(event.currentTarget.value);
+								}}
+								onKeyDown={(event) => {
+									if (event.nativeEvent.isComposing || isSearchComposingRef.current) {
+										if (event.key === "Enter") event.stopPropagation();
+									}
+								}}
 							/>
 						</div>
 						<Button type="submit" variant="secondary" size="sm">

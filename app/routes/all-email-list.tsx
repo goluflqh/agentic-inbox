@@ -179,10 +179,13 @@ export default function AllEmailListRoute() {
 	const dateFrom = searchParams.get("from_date") || "";
 	const dateTo = searchParams.get("to_date") || "";
 	const dateBounds = localDateBounds(dateFrom, dateTo);
+	const isSearchComposingRef = useRef(false);
 	const [searchInput, setSearchInput] = useState(q);
 
 	useEffect(() => {
-		setSearchInput(q);
+		if (!isSearchComposingRef.current) {
+			setSearchInput(q);
+		}
 	}, [q]);
 
 	const setFilter = (next: { domain?: string; status?: "all" | "unread" | "starred"; q?: string; fromDate?: string; toDate?: string }) => {
@@ -591,6 +594,18 @@ export default function AllEmailListRoute() {
 							size="sm"
 							value={searchInput}
 							onChange={(event) => setSearchInput(event.target.value)}
+							onCompositionStart={() => {
+								isSearchComposingRef.current = true;
+							}}
+							onCompositionEnd={(event) => {
+								isSearchComposingRef.current = false;
+								setSearchInput(event.currentTarget.value);
+							}}
+							onKeyDown={(event) => {
+								if (event.nativeEvent.isComposing || isSearchComposingRef.current) {
+									if (event.key === "Enter") event.stopPropagation();
+								}
+							}}
 						/>
 					</div>
 					<Button type="submit" variant="secondary" size="sm">
