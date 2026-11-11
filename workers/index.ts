@@ -142,7 +142,20 @@ function isSenderBlocked(sender: string, blockedList: string[]): boolean {
 		if (p.startsWith("@")) {
 			return emailOnly.endsWith(p) || s.endsWith(p);
 		}
-		return emailOnly === p || s === p || s.includes(`<${p}>`);
+		if (emailOnly === p || s === p || s.includes(`<${p}>`)) {
+			return true;
+		}
+		// Plus-addressing support (e.g. failed-payments+acct_xxx@stripe.com)
+		if (emailOnly.includes("+") && p.includes("@")) {
+			const [local, dom] = emailOnly.split("@");
+			const baseLocal = local.split("+")[0];
+			const [pLocal, pDom] = p.split("@");
+			const pBaseLocal = pLocal.split("+")[0];
+			if (dom === pDom && baseLocal === pBaseLocal) {
+				return true;
+			}
+		}
+		return false;
 	});
 }
 
@@ -634,10 +647,11 @@ app.get("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 	try {
 		const mailboxId = c.req.param("mailboxId")!;
-		const { sender, scope = "mailbox", moveToTrash = false } = (await c.req.json()) as {
+		const { sender, scope = "mailbox", moveToTrash = false, emailId } = (await c.req.json()) as {
 			sender: string;
 			scope?: "mailbox" | "global";
 			moveToTrash?: boolean;
+			emailId?: string;
 		};
 
 		if (!sender || !sender.trim()) {
@@ -696,26 +710,51 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 		let movedCount = 0;
 		const mailboxCounts: Record<string, number> = {};
 		if (moveToTrash) {
-			if (scope === "global") {
-				const allMailboxes = await listMailboxes(c.env.BUCKET);
-				const targetMailboxIds = new Set(allMailboxes.map((m) => m.id));
-				targetMailboxIds.add(mailboxId);
-				for (const mbId of targetMailboxIds) {
-					try {
-						const stub = getMailboxStub(c.env, mbId);
-						const count = await (stub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
-						if (count > 0) {
-							mailboxCounts[mbId] = count;
-							movedCount += count;
-						}
-					} catch (err) {
-						console.error(`Failed to move emails in mailbox ${mbId}:`, err);
-					}
+			// 1. Always prioritize the current active mailbox first
+			try {
+				const currentCount = await (c.var.mailboxStub as any).moveEmailsBySender(
+					normalizedSender,
+					Folders.TRASH,
+					emailId,
+				);
+				if (currentCount > 0) {
+					mailboxCounts[mailboxId] = currentCount;
+					movedCount += currentCount;
 				}
-			} else {
-				movedCount = await (c.var.mailboxStub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
-				if (movedCount > 0) {
-					mailboxCounts[mailboxId] = movedCount;
+			} catch (err) {
+				console.error(`Failed to move emails in current mailbox ${mailboxId}:`, err);
+			}
+
+			// 2. If global block, sweep other mailboxes in concurrency-safe batches
+			if (scope === "global") {
+				try {
+					const allMailboxes = await listMailboxes(c.env.BUCKET);
+					const otherMailboxes = allMailboxes.filter(
+						(m) => m.id.toLowerCase() !== mailboxId.toLowerCase(),
+					);
+					const BATCH_SIZE = 5;
+					for (let i = 0; i < otherMailboxes.length; i += BATCH_SIZE) {
+						const batch = otherMailboxes.slice(i, i + BATCH_SIZE);
+						await Promise.allSettled(
+							batch.map(async (mb) => {
+								try {
+									const stub = getMailboxStub(c.env, mb.id);
+									const count = await (stub as any).moveEmailsBySender(
+										normalizedSender,
+										Folders.TRASH,
+									);
+									if (count > 0) {
+										mailboxCounts[mb.id] = count;
+										movedCount += count;
+									}
+								} catch (err) {
+									console.error(`Failed to move emails in mailbox ${mb.id}:`, err);
+								}
+							}),
+						);
+					}
+				} catch (err) {
+					console.error("Failed to sweep other mailboxes for blocked sender:", err);
 				}
 			}
 		}

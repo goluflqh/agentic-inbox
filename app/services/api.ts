@@ -189,7 +189,7 @@ const api = {
 		),
 	blockSender: (
 		mailboxId: string,
-		data: { sender: string; scope?: "mailbox" | "global"; moveToTrash?: boolean },
+		data: { sender: string; scope?: "mailbox" | "global"; moveToTrash?: boolean; emailId?: string },
 	) =>
 		post<{
 			success: boolean;

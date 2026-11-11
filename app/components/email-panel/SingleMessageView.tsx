@@ -137,6 +137,7 @@ export default function SingleMessageView({
 				sender: senderNormalized,
 				scope: isGlobalBlocked ? "global" : "mailbox",
 				moveToTrash: true,
+				emailId: email.id,
 			});
 			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
 			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
@@ -314,6 +315,7 @@ export default function SingleMessageView({
 					onOpenChange={setIsBlockOpen}
 					sender={email.sender}
 					mailboxId={mailboxId}
+					emailId={email.id}
 				/>
 			)}
 		</div>

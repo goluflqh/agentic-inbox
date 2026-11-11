@@ -335,6 +335,7 @@ export default function ThreadMessage({
 					onOpenChange={setIsBlockOpen}
 					sender={email.sender}
 					mailboxId={mailboxId}
+					emailId={email.id}
 				/>
 			)}
 		</div>

@@ -891,59 +891,121 @@ export class MailboxDO extends DurableObject<Env> {
 		return true;
 	}
 
-	async moveEmailsBySender(sender: string, targetFolderId: string): Promise<number> {
+	async moveEmailsBySender(
+		sender: string,
+		targetFolderId: string,
+		fallbackEmailId?: string,
+	): Promise<number> {
 		const raw = (sender || "").toLowerCase().trim();
-		if (!raw) return 0;
 		const match = raw.match(/<([^>]+)>/);
 		const s = match ? match[1].toLowerCase().trim() : raw;
 		const isDomain = s.startsWith("@");
-		const targetFolder = targetFolderId.toLowerCase().trim();
+		const targetFolder = (targetFolderId || "trash").toLowerCase().trim();
 
 		const folderRow = [...this.ctx.storage.sql.exec(
 			`SELECT id FROM folders WHERE LOWER(id) = ?1 OR LOWER(name) = ?1 LIMIT 1`,
 			targetFolder,
 		)][0] as { id: string } | undefined;
 
-		if (!folderRow?.id) return 0;
-		const destFolderId = folderRow.id;
+		const destFolderId = folderRow?.id || targetFolder || "trash";
 
-		const query = isDomain
-			? `UPDATE emails
-			   SET folder_id = ?1
-			   WHERE (
-			       LOWER(sender) LIKE ?2
-			       OR (
-			           thread_id IN (
-			               SELECT DISTINCT thread_id FROM emails
-			               WHERE LOWER(sender) LIKE ?2 AND thread_id IS NOT NULL
-			           )
-			       )
-			   )
-			   AND folder_id != ?1`
-			: `UPDATE emails
-			   SET folder_id = ?1
-			   WHERE (
-			       LOWER(sender) = ?2
-			       OR LOWER(sender) LIKE '%<' || ?2 || '>%'
-			       OR LOWER(sender) LIKE '%' || ?2 || '%'
-			       OR (
-			           thread_id IN (
-			               SELECT DISTINCT thread_id FROM emails
-			               WHERE (
-			                   LOWER(sender) = ?2
-			                   OR LOWER(sender) LIKE '%<' || ?2 || '>%'
-			                   OR LOWER(sender) LIKE '%' || ?2 || '%'
-			               )
-			               AND thread_id IS NOT NULL
-			           )
-			       )
-			   )
-			   AND folder_id != ?1`;
+		let candidateIds: string[] = [];
 
-		const pattern = isDomain ? "%" + s : s;
-		[...this.ctx.storage.sql.exec(query, destFolderId, pattern)];
-		const changesRow = [...this.ctx.storage.sql.exec(`SELECT changes() as cnt`)][0] as { cnt: number } | undefined;
-		return changesRow?.cnt ?? 0;
+		if (isDomain) {
+			const domainPattern = "%" + s;
+			const rows = [...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails
+				 WHERE folder_id != ?1
+				 AND (
+					LOWER(sender) LIKE ?2
+					OR thread_id IN (
+						SELECT DISTINCT thread_id FROM emails
+						WHERE LOWER(sender) LIKE ?2 AND thread_id IS NOT NULL
+					)
+				 )`,
+				destFolderId,
+				domainPattern,
+			)] as { id: string }[];
+			candidateIds = rows.map((r) => r.id);
+		} else if (s) {
+			const pExact = s;
+			const pBracket = `%<${s}>%`;
+			const pSub = `%${s}%`;
+
+			// Check for plus addressing (e.g. failed-payments+acct_xxx@stripe.com)
+			let pPlus = pSub;
+			let pBase = pSub;
+			if (s.includes("+")) {
+				const [localPart, domainPart] = s.split("@");
+				const baseLocal = localPart.split("+")[0];
+				if (domainPart) {
+					pPlus = `%${baseLocal}+%@${domainPart}%`;
+					pBase = `%${baseLocal}@${domainPart}%`;
+				}
+			}
+
+			const rows = [...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails
+				 WHERE folder_id != ?1
+				 AND (
+					LOWER(sender) = ?2
+					OR LOWER(sender) LIKE ?3
+					OR LOWER(sender) LIKE ?4
+					OR LOWER(sender) LIKE ?5
+					OR LOWER(sender) LIKE ?6
+					OR thread_id IN (
+						SELECT DISTINCT thread_id FROM emails
+						WHERE (
+							LOWER(sender) = ?2
+							OR LOWER(sender) LIKE ?3
+							OR LOWER(sender) LIKE ?4
+							OR LOWER(sender) LIKE ?5
+							OR LOWER(sender) LIKE ?6
+						)
+						AND thread_id IS NOT NULL
+					)
+				 )`,
+				destFolderId,
+				pExact,
+				pBracket,
+				pSub,
+				pPlus,
+				pBase,
+			)] as { id: string }[];
+			candidateIds = rows.map((r) => r.id);
+		}
+
+		if (fallbackEmailId && !candidateIds.includes(fallbackEmailId)) {
+			const fallbackRow = [...this.ctx.storage.sql.exec(
+				`SELECT id, thread_id FROM emails WHERE id = ?1 AND folder_id != ?2 LIMIT 1`,
+				fallbackEmailId,
+				destFolderId,
+			)][0] as { id: string; thread_id: string | null } | undefined;
+
+			if (fallbackRow) {
+				candidateIds.push(fallbackRow.id);
+				if (fallbackRow.thread_id) {
+					const threadRows = [...this.ctx.storage.sql.exec(
+						`SELECT id FROM emails WHERE thread_id = ?1 AND folder_id != ?2`,
+						fallbackRow.thread_id,
+						destFolderId,
+					)] as { id: string }[];
+					for (const tr of threadRows) {
+						if (!candidateIds.includes(tr.id)) {
+							candidateIds.push(tr.id);
+						}
+					}
+				}
+			}
+		}
+
+		if (candidateIds.length === 0) {
+			return 0;
+		}
+
+		await this.moveEmails(candidateIds, destFolderId);
+		console.log(`[moveEmailsBySender] successfully moved ${candidateIds.length} email(s) to ${destFolderId} for ${sender}`);
+		return candidateIds.length;
 	}
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────

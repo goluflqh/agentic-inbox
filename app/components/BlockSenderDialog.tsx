@@ -14,6 +14,7 @@ interface BlockSenderDialogProps {
 	onOpenChange: (open: boolean) => void;
 	sender: string;
 	mailboxId: string;
+	emailId?: string;
 	onSuccess?: (movedCount: number) => void;
 }
 
@@ -22,6 +23,7 @@ export default function BlockSenderDialog({
 	onOpenChange,
 	sender,
 	mailboxId,
+	emailId,
 	onSuccess,
 }: BlockSenderDialogProps) {
 	const toastManager = useKumoToastManager();
@@ -38,6 +40,7 @@ export default function BlockSenderDialog({
 				sender,
 				scope,
 				moveToTrash,
+				emailId,
 			});
 
 			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
