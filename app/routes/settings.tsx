@@ -90,7 +90,13 @@ export default function SettingsRoute() {
 		if (!mailboxId) return;
 		try {
 			await api.unblockSender(mailboxId, sender, scope);
-			toastManager.add({ title: `Unblocked ${sender}` });
+			toastManager.add({
+				title: scope === "global" ? `Unblocked ${sender} across all accounts` : `Unblocked ${sender}`,
+				description:
+					scope === "global"
+						? "This sender is now allowed to send to all mailboxes."
+						: `This sender is now allowed to send to ${mailboxId}.`,
+			});
 			refetchBlocked();
 		} catch {
 			toastManager.add({ title: "Failed to unblock sender", variant: "error" });
@@ -222,34 +228,44 @@ export default function SettingsRoute() {
 							</div>
 						) : (
 							<div className="divide-y divide-kumo-line rounded-lg border border-kumo-line bg-kumo-recessed overflow-hidden">
-								{blockedData.mailboxBlocked.map((sender) => (
-									<div key={`mb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
-										<div className="flex items-center gap-2 min-w-0">
-											<span className="font-mono text-kumo-default truncate">{sender}</span>
-											<Badge variant="secondary" className="text-[10px]">This mailbox</Badge>
-										</div>
-										<Button
-											variant="ghost"
-											size="xs"
-											onClick={() => handleUnblock(sender, "mailbox")}
-										>
-											Unblock
-										</Button>
-									</div>
-								))}
 								{blockedData.globalBlocked.map((sender) => (
 									<div key={`gb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
 										<div className="flex items-center gap-2 min-w-0">
 											<span className="font-mono text-kumo-default truncate">{sender}</span>
-											<Badge variant="outline" className="text-[10px]">All mailboxes</Badge>
+											<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10">All mailboxes (Global)</Badge>
 										</div>
 										<Button
-											variant="ghost"
+											variant="secondary"
 											size="xs"
 											onClick={() => handleUnblock(sender, "global")}
 										>
-											Unblock
+											Unblock for all accounts
 										</Button>
+									</div>
+								))}
+								{blockedData.mailboxBlocked.map((sender) => (
+									<div key={`mb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
+										<div className="flex items-center gap-2 min-w-0">
+											<span className="font-mono text-kumo-default truncate">{sender}</span>
+											<Badge variant="secondary" className="text-[10px]">This mailbox only</Badge>
+										</div>
+										<div className="flex items-center gap-1.5">
+											<Button
+												variant="ghost"
+												size="xs"
+												onClick={() => handleUnblock(sender, "mailbox")}
+											>
+												Unblock
+											</Button>
+											<Button
+												variant="secondary"
+												size="xs"
+												onClick={() => handleUnblock(sender, "global")}
+												title="Unblock across all accounts in this system"
+											>
+												Unblock Everywhere
+											</Button>
+										</div>
 									</div>
 								))}
 							</div>

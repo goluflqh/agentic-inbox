@@ -46,10 +46,20 @@ export default function BlockSenderDialog({
 			queryClient.invalidateQueries({ queryKey: queryKeys.mailboxes.detail(mailboxId) });
 			queryClient.invalidateQueries({ queryKey: ["blocked-senders", mailboxId] });
 
-			const movedMsg = res.movedCount > 0 ? ` and moved ${res.movedCount} conversation(s) to Trash` : "";
+			const movedCount = res.movedCount || 0;
+			const affectedMailboxCount = Object.keys(res.mailboxCounts || {}).length;
+			let movedMsg = "";
+			if (movedCount > 0) {
+				if (scope === "global" && affectedMailboxCount > 1) {
+					movedMsg = ` and moved ${movedCount} conversation(s) across ${affectedMailboxCount} accounts to Trash`;
+				} else {
+					movedMsg = ` and moved ${movedCount} conversation(s) to Trash`;
+				}
+			}
+
 			toastManager.add({
-				title: `Blocked ${sender}`,
-				description: `Future emails will be routed directly to Trash${movedMsg}.`,
+				title: scope === "global" ? `Blocked ${sender} globally` : `Blocked ${sender}`,
+				description: `Future emails from this sender will be routed directly to Trash${movedMsg}.`,
 			});
 
 			onOpenChange(false);
@@ -147,7 +157,10 @@ export default function BlockSenderDialog({
 								checked={moveToTrash}
 								onChange={(e) => setMoveToTrash(e.target.checked)}
 							/>
-							<span>Move all existing emails from this sender to <strong>Trash</strong></span>
+							<span>
+								Move all existing emails from this sender to <strong>Trash</strong>
+								{scope === "global" ? " across all accounts" : " in this mailbox"}
+							</span>
 						</label>
 					</div>
 

@@ -81,6 +81,25 @@ function defaultMailboxSettings(name: string) {
 	};
 }
 
+async function readMailboxSettings(env: Env, mailboxId: string): Promise<Record<string, unknown>> {
+	const obj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
+	if (!obj) return defaultMailboxSettings(mailboxId);
+	try {
+		const raw = (await obj.json()) as Record<string, unknown>;
+		if (raw && typeof raw === "object") {
+			const settings = ("settings" in raw && raw.settings && typeof raw.settings === "object")
+				? (raw.settings as Record<string, unknown>)
+				: raw;
+			return { ...defaultMailboxSettings(mailboxId), ...settings };
+		}
+	} catch {}
+	return defaultMailboxSettings(mailboxId);
+}
+
+async function writeMailboxSettings(env: Env, mailboxId: string, settings: Record<string, unknown>): Promise<void> {
+	await env.BUCKET.put(`mailboxes/${mailboxId}.json`, JSON.stringify(settings));
+}
+
 const GLOBAL_BLOCKED_SENDERS_KEY = "config/global-blocked-senders.json";
 
 async function getGlobalBlockedSenders(env: Env): Promise<string[]> {
@@ -539,104 +558,135 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/batch/move", async (c: AppContext)
 // -- Blocked Senders ------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
-	const mailboxId = c.req.param("mailboxId")!;
-	const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-	let mailboxBlocked: string[] = [];
-	if (obj) {
-		const data = await obj.json<{ settings?: { blockedSenders?: string[] } }>();
-		mailboxBlocked = data.settings?.blockedSenders || [];
+	try {
+		const mailboxId = c.req.param("mailboxId")!;
+		const settings = await readMailboxSettings(c.env, mailboxId);
+		const mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		const globalBlocked = await getGlobalBlockedSenders(c.env);
+		return c.json({ mailboxBlocked, globalBlocked });
+	} catch (err: any) {
+		console.error("Failed to get blocked senders:", err);
+		return c.json({ error: err?.message || "Failed to get blocked senders" }, 500);
 	}
-	const globalBlocked = await getGlobalBlockedSenders(c.env);
-	return c.json({ mailboxBlocked, globalBlocked });
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
-	const mailboxId = c.req.param("mailboxId")!;
-	const { sender, scope = "mailbox", moveToTrash = false } = (await c.req.json()) as {
-		sender: string;
-		scope?: "mailbox" | "global";
-		moveToTrash?: boolean;
-	};
-
-	if (!sender || !sender.trim()) {
-		return c.json({ error: "Sender is required" }, 400);
-	}
-
-	const normalizedSender = sender.trim().toLowerCase();
-	let mailboxBlocked: string[] = [];
-	let globalBlocked: string[] = [];
-
-	if (scope === "global") {
-		globalBlocked = await addGlobalBlockedSender(c.env, normalizedSender);
-		const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		if (obj) {
-			const data = await obj.json<{ settings?: { blockedSenders?: string[] } }>();
-			mailboxBlocked = data.settings?.blockedSenders || [];
-		}
-	} else {
-		const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		let currentData: { id: string; name: string; email: string; settings: Record<string, unknown> } = {
-			id: mailboxId,
-			name: mailboxId,
-			email: mailboxId,
-			settings: defaultMailboxSettings(mailboxId),
+	try {
+		const mailboxId = c.req.param("mailboxId")!;
+		const { sender, scope = "mailbox", moveToTrash = false } = (await c.req.json()) as {
+			sender: string;
+			scope?: "mailbox" | "global";
+			moveToTrash?: boolean;
 		};
-		if (obj) {
-			currentData = await obj.json();
-		}
-		currentData.settings = currentData.settings || {};
-		const list: string[] = Array.isArray(currentData.settings.blockedSenders)
-			? [...(currentData.settings.blockedSenders as string[])]
-			: [];
-		if (!list.includes(normalizedSender)) {
-			list.push(normalizedSender);
-		}
-		currentData.settings.blockedSenders = list;
-		await c.env.BUCKET.put(`mailboxes/${mailboxId}.json`, JSON.stringify(currentData.settings));
-		mailboxBlocked = list;
-		globalBlocked = await getGlobalBlockedSenders(c.env);
-	}
 
-	let movedCount = 0;
-	if (moveToTrash) {
-		movedCount = await (c.var.mailboxStub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
-	}
+		if (!sender || !sender.trim()) {
+			return c.json({ error: "Sender is required" }, 400);
+		}
 
-	return c.json({ success: true, scope, sender: normalizedSender, movedCount, mailboxBlocked, globalBlocked });
+		const normalizedSender = sender.trim().toLowerCase();
+		let mailboxBlocked: string[] = [];
+		let globalBlocked: string[] = [];
+
+		if (scope === "global") {
+			globalBlocked = await addGlobalBlockedSender(c.env, normalizedSender);
+			const settings = await readMailboxSettings(c.env, mailboxId);
+			mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		} else {
+			const settings = await readMailboxSettings(c.env, mailboxId);
+			const list = Array.isArray(settings.blockedSenders) ? [...(settings.blockedSenders as string[])] : [];
+			if (!list.includes(normalizedSender)) {
+				list.push(normalizedSender);
+			}
+			settings.blockedSenders = list;
+			await writeMailboxSettings(c.env, mailboxId, settings);
+			mailboxBlocked = list;
+			globalBlocked = await getGlobalBlockedSenders(c.env);
+		}
+
+		let movedCount = 0;
+		const mailboxCounts: Record<string, number> = {};
+		if (moveToTrash) {
+			if (scope === "global") {
+				const allMailboxes = await listMailboxes(c.env.BUCKET);
+				for (const mb of allMailboxes) {
+					try {
+						const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mb.id));
+						const count = await (stub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
+						if (count > 0) {
+							mailboxCounts[mb.id] = count;
+							movedCount += count;
+						}
+					} catch (err) {
+						console.error(`Failed to move emails in mailbox ${mb.id}:`, err);
+					}
+				}
+			} else {
+				movedCount = await (c.var.mailboxStub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
+				if (movedCount > 0) {
+					mailboxCounts[mailboxId] = movedCount;
+				}
+			}
+		}
+
+		return c.json({
+			success: true,
+			scope,
+			sender: normalizedSender,
+			movedCount,
+			mailboxCounts,
+			mailboxBlocked,
+			globalBlocked,
+		});
+	} catch (err: any) {
+		console.error("Failed to block sender:", err);
+		return c.json({ error: err?.message || "Failed to block sender" }, 500);
+	}
 });
 
 app.delete("/api/v1/mailboxes/:mailboxId/block-sender/:sender", async (c: AppContext) => {
-	const mailboxId = c.req.param("mailboxId")!;
-	const sender = decodeURIComponent(c.req.param("sender")!).trim().toLowerCase();
-	const scope = c.req.query("scope") || "mailbox";
+	try {
+		const mailboxId = c.req.param("mailboxId")!;
+		const sender = decodeURIComponent(c.req.param("sender")!).trim().toLowerCase();
+		const scope = c.req.query("scope") || "mailbox";
 
-	let mailboxBlocked: string[] = [];
-	let globalBlocked: string[] = [];
+		let mailboxBlocked: string[] = [];
+		let globalBlocked: string[] = [];
 
-	if (scope === "global") {
-		globalBlocked = await removeGlobalBlockedSender(c.env, sender);
-		const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		if (obj) {
-			const data = await obj.json<{ settings?: { blockedSenders?: string[] } }>();
-			mailboxBlocked = data.settings?.blockedSenders || [];
-		}
-	} else {
-		const obj = await c.env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		if (obj) {
-			const currentData = await obj.json<{ settings?: Record<string, unknown> }>();
-			currentData.settings = currentData.settings || {};
-			const list: string[] = Array.isArray(currentData.settings.blockedSenders)
-				? (currentData.settings.blockedSenders as string[])
+		if (scope === "global") {
+			globalBlocked = await removeGlobalBlockedSender(c.env, sender);
+			// Also remove from all individual mailboxes to ensure complete unblock across all accounts
+			const allMailboxes = await listMailboxes(c.env.BUCKET);
+			for (const mb of allMailboxes) {
+				try {
+					const mbSettings = await readMailboxSettings(c.env, mb.id);
+					if (Array.isArray(mbSettings.blockedSenders) && mbSettings.blockedSenders.includes(sender)) {
+						mbSettings.blockedSenders = (mbSettings.blockedSenders as string[]).filter(
+							(x) => x.toLowerCase() !== sender,
+						);
+						await writeMailboxSettings(c.env, mb.id, mbSettings);
+					}
+				} catch (e) {
+					console.error(`Failed to unblock in mailbox ${mb.id}:`, e);
+				}
+			}
+			const settings = await readMailboxSettings(c.env, mailboxId);
+			mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		} else {
+			const settings = await readMailboxSettings(c.env, mailboxId);
+			const list = Array.isArray(settings.blockedSenders)
+				? (settings.blockedSenders as string[]).filter((x) => x !== sender)
 				: [];
-			const next = list.filter((s) => s.toLowerCase() !== sender);
-			currentData.settings.blockedSenders = next;
-			await c.env.BUCKET.put(`mailboxes/${mailboxId}.json`, JSON.stringify(currentData.settings));
-			mailboxBlocked = next;
+			settings.blockedSenders = list;
+			await writeMailboxSettings(c.env, mailboxId, settings);
+			mailboxBlocked = list;
+			globalBlocked = await getGlobalBlockedSenders(c.env);
 		}
-		globalBlocked = await getGlobalBlockedSenders(c.env);
-	}
 
-	return c.json({ success: true, sender, mailboxBlocked, globalBlocked });
+		return c.json({ success: true, sender, mailboxBlocked, globalBlocked });
+	} catch (err: any) {
+		console.error("Failed to unblock sender:", err);
+		return c.json({ error: err?.message || "Failed to unblock sender" }, 500);
+	}
 });
 
 // -- Threads --------------------------------------------------------
@@ -791,12 +841,8 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	let targetFolder: string = Folders.INBOX;
 	try {
-		const mailboxObj = await env.BUCKET.get(`mailboxes/${mailboxId}.json`);
-		let mailboxBlocked: string[] = [];
-		if (mailboxObj) {
-			const mbData = (await mailboxObj.json()) as { settings?: { blockedSenders?: string[] } };
-			mailboxBlocked = mbData.settings?.blockedSenders || [];
-		}
+		const settings = await readMailboxSettings(env, mailboxId);
+		const mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
 		const globalBlocked = await getGlobalBlockedSenders(env);
 		if (isSenderBlocked(senderAddress, mailboxBlocked) || isSenderBlocked(senderAddress, globalBlocked)) {
 			targetFolder = Folders.TRASH;

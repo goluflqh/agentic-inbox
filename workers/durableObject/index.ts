@@ -825,61 +825,86 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (!folder) return false;
 
-		const targets = this.db
-			.select({ id: schema.emails.id, thread_id: schema.emails.thread_id })
-			.from(schema.emails)
-			.where(inArray(schema.emails.id, ids))
-			.all();
+		// Chunk in batches of 50 to avoid SQLite parameter bounds
+		const CHUNK_SIZE = 50;
+		for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+			const chunk = ids.slice(i, i + CHUNK_SIZE);
+			const targets = this.db
+				.select({ id: schema.emails.id, thread_id: schema.emails.thread_id })
+				.from(schema.emails)
+				.where(inArray(schema.emails.id, chunk))
+				.all();
 
-		const threadIds = targets.map((t) => t.thread_id).filter((t): t is string => Boolean(t));
-		const singleIds = targets.filter((t) => !t.thread_id).map((t) => t.id);
+			const threadIds = Array.from(new Set(targets.map((t) => t.thread_id).filter((t): t is string => Boolean(t))));
+			const singleIds = targets.filter((t) => !t.thread_id).map((t) => t.id);
 
-		if (threadIds.length > 0) {
-			this.db
-				.update(schema.emails)
-				.set({ folder_id: folder.id })
-				.where(inArray(schema.emails.thread_id, threadIds))
-				.run();
-		}
-		if (singleIds.length > 0) {
-			this.db
-				.update(schema.emails)
-				.set({ folder_id: folder.id })
-				.where(inArray(schema.emails.id, singleIds))
-				.run();
+			if (threadIds.length > 0) {
+				for (let j = 0; j < threadIds.length; j += CHUNK_SIZE) {
+					const tChunk = threadIds.slice(j, j + CHUNK_SIZE);
+					this.db
+						.update(schema.emails)
+						.set({ folder_id: folder.id })
+						.where(inArray(schema.emails.thread_id, tChunk))
+						.run();
+				}
+			}
+			if (singleIds.length > 0) {
+				for (let j = 0; j < singleIds.length; j += CHUNK_SIZE) {
+					const sChunk = singleIds.slice(j, j + CHUNK_SIZE);
+					this.db
+						.update(schema.emails)
+						.set({ folder_id: folder.id })
+						.where(inArray(schema.emails.id, sChunk))
+						.run();
+				}
+			}
 		}
 
 		return true;
 	}
 
 	async moveEmailsBySender(sender: string, targetFolderId: string): Promise<number> {
-		const folder = this.db
-			.select({ id: schema.folders.id })
-			.from(schema.folders)
-			.where(eq(schema.folders.id, targetFolderId))
-			.get();
-		if (!folder) return 0;
-
 		const s = sender.toLowerCase().trim();
-		let targets: { id: string }[];
-		if (s.startsWith("@")) {
-			targets = this.db
-				.select({ id: schema.emails.id })
-				.from(schema.emails)
-				.where(sql`LOWER(${schema.emails.sender}) LIKE ${"%" + s}`)
-				.all();
-		} else {
-			targets = this.db
-				.select({ id: schema.emails.id })
-				.from(schema.emails)
-				.where(sql`LOWER(${schema.emails.sender}) = ${s}`)
-				.all();
-		}
+		const isDomain = s.startsWith("@");
+		const targetFolder = targetFolderId.toLowerCase().trim();
 
-		if (targets.length === 0) return 0;
-		const ids = targets.map((t) => t.id);
-		await this.moveEmails(ids, targetFolderId);
-		return ids.length;
+		const folderRow = [...this.ctx.storage.sql.exec(
+			`SELECT id FROM folders WHERE LOWER(id) = ?1 OR LOWER(name) = ?1 LIMIT 1`,
+			targetFolder,
+		)][0] as { id: string } | undefined;
+
+		if (!folderRow?.id) return 0;
+		const destFolderId = folderRow.id;
+
+		const query = isDomain
+			? `UPDATE emails
+			   SET folder_id = ?1
+			   WHERE (
+			       LOWER(sender) LIKE ?2
+			       OR (
+			           thread_id IN (
+			               SELECT DISTINCT thread_id FROM emails
+			               WHERE LOWER(sender) LIKE ?2 AND thread_id IS NOT NULL
+			           )
+			       )
+			   )
+			   AND folder_id != ?1`
+			: `UPDATE emails
+			   SET folder_id = ?1
+			   WHERE (
+			       LOWER(sender) = ?2
+			       OR (
+			           thread_id IN (
+			               SELECT DISTINCT thread_id FROM emails
+			               WHERE LOWER(sender) = ?2 AND thread_id IS NOT NULL
+			           )
+			       )
+			   )
+			   AND folder_id != ?1`;
+
+		const pattern = isDomain ? "%" + s : s;
+		const result = this.ctx.storage.sql.exec(query, destFolderId, pattern);
+		return typeof result.rowsWritten === "number" ? result.rowsWritten : 0;
 	}
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────

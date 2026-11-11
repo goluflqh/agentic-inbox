@@ -178,7 +178,9 @@ const api = {
 
 	// Blocked Senders
 	getBlockedSenders: (mailboxId: string) =>
-		get<{ mailboxBlocked: string[]; globalBlocked: string[] }>(`/api/v1/mailboxes/${mailboxId}/block-sender`),
+		get<{ mailboxBlocked: string[]; globalBlocked: string[] }>(
+			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/block-sender`,
+		),
 	blockSender: (
 		mailboxId: string,
 		data: { sender: string; scope?: "mailbox" | "global"; moveToTrash?: boolean },
@@ -188,12 +190,13 @@ const api = {
 			scope: "mailbox" | "global";
 			sender: string;
 			movedCount: number;
+			mailboxCounts?: Record<string, number>;
 			mailboxBlocked: string[];
 			globalBlocked: string[];
-		}>(`/api/v1/mailboxes/${mailboxId}/block-sender`, data),
+		}>(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/block-sender`, data),
 	unblockSender: (mailboxId: string, sender: string, scope?: "mailbox" | "global") =>
 		del<{ success: boolean; sender: string; mailboxBlocked: string[]; globalBlocked: string[] }>(
-			`/api/v1/mailboxes/${mailboxId}/block-sender/${encodeURIComponent(sender)}${scope ? `?scope=${scope}` : ""}`,
+			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/block-sender/${encodeURIComponent(sender)}${scope ? `?scope=${scope}` : ""}`,
 		),
 };
 

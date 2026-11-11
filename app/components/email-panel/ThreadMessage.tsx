@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Tooltip } from "@cloudflare/kumo";
+import { Badge, Button, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArrowSquareOutIcon,
 	CaretDownIcon,
@@ -13,6 +13,7 @@ import {
 	ProhibitIcon,
 	TrashIcon,
 } from "@phosphor-icons/react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import BlockSenderDialog from "~/components/BlockSenderDialog";
 import EmailAttachmentList from "~/components/EmailAttachmentList";
@@ -25,6 +26,7 @@ import {
 	rewriteInlineImages,
 	stripHtml,
 } from "~/lib/utils";
+import api from "~/services/api";
 import type { Email } from "~/types";
 
 interface ThreadMessageProps {
@@ -74,9 +76,64 @@ export default function ThreadMessage({
 	onViewSource,
 	onPreviewImage,
 }: ThreadMessageProps) {
+	const toastManager = useKumoToastManager();
+	const queryClient = useQueryClient();
 	const isSelf = email.sender === mailboxEmail;
 	const unsub = useMemo(() => (!isSelf && !isDraft ? detectUnsubscribe(email) : null), [email, isSelf, isDraft]);
 	const [isBlockOpen, setIsBlockOpen] = useState(false);
+
+	const { data: blockedData } = useQuery({
+		queryKey: ["blocked-senders", mailboxId],
+		queryFn: () => (mailboxId ? api.getBlockedSenders(mailboxId) : null),
+		enabled: !!mailboxId && !isSelf && !isDraft,
+		staleTime: 30_000,
+	});
+
+	const senderNormalized = (email.sender || "").toLowerCase().trim();
+	const isGlobalBlocked = (blockedData?.globalBlocked || []).some((p) => {
+		const norm = p.toLowerCase().trim();
+		return norm.startsWith("@") ? senderNormalized.endsWith(norm) : senderNormalized === norm;
+	});
+	const isMailboxBlocked = (blockedData?.mailboxBlocked || []).some((p) => {
+		const norm = p.toLowerCase().trim();
+		return norm.startsWith("@") ? senderNormalized.endsWith(norm) : senderNormalized === norm;
+	});
+	const isBlocked = isGlobalBlocked || isMailboxBlocked;
+
+	const handleUnblock = async () => {
+		if (!mailboxId) return;
+		const scope = isGlobalBlocked ? "global" : "mailbox";
+		try {
+			await api.unblockSender(mailboxId, senderNormalized, scope);
+			queryClient.invalidateQueries({ queryKey: ["blocked-senders", mailboxId] });
+			toastManager.add({
+				title: scope === "global" ? `Unblocked ${senderNormalized} for all accounts` : `Unblocked ${senderNormalized}`,
+				description: "This sender will now deliver to inbox normally.",
+			});
+		} catch {
+			toastManager.add({ title: "Failed to unblock sender", variant: "error" });
+		}
+	};
+
+	const handleUnsubscribe = () => {
+		if (!unsub) return;
+		if (unsub.url.startsWith("mailto:")) {
+			window.location.href = unsub.url;
+			toastManager.add({
+				title: "Opening email client...",
+				description: `Sending unsubscribe request to ${unsub.url.replace(/^mailto:/i, "")}`,
+			});
+		} else {
+			const win = window.open(unsub.url, "_blank", "noopener,noreferrer");
+			if (!win || win.closed || typeof win.closed === "undefined") {
+				window.location.href = unsub.url;
+			}
+			toastManager.add({
+				title: "Opening unsubscribe page...",
+				description: "Redirecting to sender's unsubscribe link.",
+			});
+		}
+	};
 	const containerClassName = `${!isLast ? "border-b border-kumo-line" : ""} ${isDraft ? "border-l-2 border-l-kumo-warning bg-kumo-warning/[0.02]" : ""}`;
 	const senderLabel = isDraft ? "Draft reply" : isSelf ? "You" : email.sender;
 
@@ -135,12 +192,12 @@ export default function ThreadMessage({
 					</div>
 					<div className="flex items-center gap-1.5 shrink-0">
 						{unsub && (
-							<Tooltip content="Unsubscribe from this sender's mailing list" side="bottom" asChild>
+							<Tooltip content={unsub.url.startsWith("mailto:") ? "Send email to unsubscribe" : "Open unsubscribe page"} side="bottom" asChild>
 								<Button
 									variant="secondary"
 									size="sm"
 									icon={<ArrowSquareOutIcon size={12} />}
-									onClick={() => window.open(unsub.url, "_blank", "noopener,noreferrer")}
+									onClick={handleUnsubscribe}
 									className="!h-6 !px-2 text-xs"
 								>
 									Unsubscribe
@@ -148,17 +205,35 @@ export default function ThreadMessage({
 							</Tooltip>
 						)}
 						{mailboxId && !isSelf && !isDraft && (
-							<Tooltip content={`Block ${email.sender}`} side="bottom" asChild>
-								<Button
-									variant="ghost"
-									shape="square"
-									size="sm"
-									icon={<ProhibitIcon size={14} className="text-kumo-danger" />}
-									onClick={() => setIsBlockOpen(true)}
-									aria-label="Block sender"
-									className="!h-6 !w-6"
-								/>
-							</Tooltip>
+							isBlocked ? (
+								<Tooltip
+									content={isGlobalBlocked ? "Unblock this sender across all accounts" : `Unblock this sender for ${mailboxId}`}
+									side="bottom"
+									asChild
+								>
+									<Button
+										variant="secondary"
+										size="sm"
+										icon={<ProhibitIcon size={12} className="text-kumo-warning" />}
+										onClick={handleUnblock}
+										className="!h-6 !px-2 text-xs"
+									>
+										{isGlobalBlocked ? "Unblock All" : "Unblock"}
+									</Button>
+								</Tooltip>
+							) : (
+								<Tooltip content={`Block ${email.sender}`} side="bottom" asChild>
+									<Button
+										variant="ghost"
+										shape="square"
+										size="sm"
+										icon={<ProhibitIcon size={14} className="text-kumo-danger" />}
+										onClick={() => setIsBlockOpen(true)}
+										aria-label="Block sender"
+										className="!h-6 !w-6"
+									/>
+								</Tooltip>
+							)
 						)}
 						<span className="text-xs text-kumo-subtle">
 							{formatShortDate(email.date)}
