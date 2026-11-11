@@ -545,6 +545,36 @@ app.delete("/api/v1/mailboxes/:mailboxId/trash", async (c: AppContext) => {
 	return c.json({ success: true });
 });
 
+app.delete("/api/v1/trash", async (c: AppContext) => {
+	try {
+		const allMailboxes = await listMailboxes(c.env.BUCKET);
+		const allAttachments: any[] = [];
+		await Promise.all(
+			allMailboxes.map(async (mb) => {
+				try {
+					const stub = getMailboxStub(c.env, mb.id);
+					const atts = await (stub as any).emptyTrash();
+					if (Array.isArray(atts) && atts.length > 0) {
+						allAttachments.push(...atts);
+					}
+				} catch (e) {
+					console.error(`Failed to empty trash for ${mb.id}:`, e);
+				}
+			})
+		);
+		if (allAttachments.length > 0) {
+			for (let i = 0; i < allAttachments.length; i += 500) {
+				const batch = allAttachments.slice(i, i + 500);
+				await c.env.BUCKET.delete(batch.map((att: any) => `attachments/${att.email_id}/${att.id}/${att.filename}`));
+			}
+		}
+		return c.json({ success: true });
+	} catch (err: any) {
+		console.error("Failed to empty all trash:", err);
+		return c.json({ error: err?.message || "Failed to empty all trash" }, 500);
+	}
+});
+
 app.post("/api/v1/mailboxes/:mailboxId/emails/:id/move", async (c: AppContext) => {
 	const { folderId } = (await c.req.json()) as { folderId: string };
 	const success = await c.var.mailboxStub.moveEmail(c.req.param("id")!, folderId);
@@ -558,19 +588,20 @@ app.post("/api/v1/mailboxes/:mailboxId/emails/batch/move", async (c: AppContext)
 	return success ? c.json({ count: ids.length, status: "moved" }) : c.json({ error: "Folder not found" }, 400);
 });
 
-// -- Blocked Senders ------------------------------------------------
+// -- Blocked & Allowed Senders ----------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 	try {
 		const mailboxId = c.req.param("mailboxId")!;
 		const settings = await readMailboxSettings(c.env, mailboxId);
 		const rawMailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		const mailboxAllowed = Array.isArray(settings.allowedSenders) ? (settings.allowedSenders as string[]) : [];
 		const globalBlocked = await getGlobalBlockedSenders(c.env);
 		// Deduplicate: remove from mailboxBlocked if already in globalBlocked
 		const mailboxBlocked = rawMailboxBlocked.filter(
 			(s) => !globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()),
 		);
-		return c.json({ mailboxBlocked, globalBlocked });
+		return c.json({ mailboxBlocked, globalBlocked, mailboxAllowed });
 	} catch (err: any) {
 		console.error("Failed to get blocked senders:", err);
 		return c.json({ error: err?.message || "Failed to get blocked senders" }, 500);
@@ -590,18 +621,32 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 			return c.json({ error: "Sender is required" }, 400);
 		}
 
-		const normalizedSender = sender.trim().toLowerCase();
+		const rawSender = sender.trim().toLowerCase();
+		const match = rawSender.match(/<([^>]+)>/);
+		const normalizedSender = match ? match[1].toLowerCase().trim() : rawSender;
+
 		let mailboxBlocked: string[] = [];
 		let globalBlocked: string[] = [];
 
 		if (scope === "global") {
 			globalBlocked = await addGlobalBlockedSender(c.env, normalizedSender);
 			const settings = await readMailboxSettings(c.env, mailboxId);
+			let changed = false;
 			// Clean up redundant mailbox-level block if present
 			if (Array.isArray(settings.blockedSenders) && settings.blockedSenders.includes(normalizedSender)) {
 				settings.blockedSenders = (settings.blockedSenders as string[]).filter(
 					(x) => x.toLowerCase() !== normalizedSender,
 				);
+				changed = true;
+			}
+			// Clean up allowed exception if user explicitly chooses to block globally
+			if (Array.isArray(settings.allowedSenders) && settings.allowedSenders.includes(normalizedSender)) {
+				settings.allowedSenders = (settings.allowedSenders as string[]).filter(
+					(x) => x.toLowerCase() !== normalizedSender,
+				);
+				changed = true;
+			}
+			if (changed) {
 				await writeMailboxSettings(c.env, mailboxId, settings);
 			}
 			mailboxBlocked = ((settings.blockedSenders as string[]) || []).filter(
@@ -614,6 +659,10 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 				list.push(normalizedSender);
 			}
 			settings.blockedSenders = list;
+			// Remove from allowedSenders if present
+			if (Array.isArray(settings.allowedSenders)) {
+				settings.allowedSenders = settings.allowedSenders.filter((x) => x.toLowerCase() !== normalizedSender);
+			}
 			await writeMailboxSettings(c.env, mailboxId, settings);
 			globalBlocked = await getGlobalBlockedSenders(c.env);
 			mailboxBlocked = list.filter(
@@ -626,16 +675,18 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 		if (moveToTrash) {
 			if (scope === "global") {
 				const allMailboxes = await listMailboxes(c.env.BUCKET);
-				for (const mb of allMailboxes) {
+				const targetMailboxIds = new Set(allMailboxes.map((m) => m.id));
+				targetMailboxIds.add(mailboxId);
+				for (const mbId of targetMailboxIds) {
 					try {
-						const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mb.id));
+						const stub = getMailboxStub(c.env, mbId);
 						const count = await (stub as any).moveEmailsBySender(normalizedSender, Folders.TRASH);
 						if (count > 0) {
-							mailboxCounts[mb.id] = count;
+							mailboxCounts[mbId] = count;
 							movedCount += count;
 						}
 					} catch (err) {
-						console.error(`Failed to move emails in mailbox ${mb.id}:`, err);
+						console.error(`Failed to move emails in mailbox ${mbId}:`, err);
 					}
 				}
 			} else {
@@ -661,10 +712,81 @@ app.post("/api/v1/mailboxes/:mailboxId/block-sender", async (c: AppContext) => {
 	}
 });
 
+app.post("/api/v1/mailboxes/:mailboxId/allow-sender", async (c: AppContext) => {
+	try {
+		const mailboxId = c.req.param("mailboxId")!;
+		const { sender, restoreToInbox = true } = (await c.req.json()) as {
+			sender: string;
+			restoreToInbox?: boolean;
+		};
+
+		if (!sender || !sender.trim()) {
+			return c.json({ error: "Sender is required" }, 400);
+		}
+
+		const rawSender = sender.trim().toLowerCase();
+		const match = rawSender.match(/<([^>]+)>/);
+		const normalizedSender = match ? match[1].toLowerCase().trim() : rawSender;
+
+		const settings = await readMailboxSettings(c.env, mailboxId);
+		const allowed = Array.isArray(settings.allowedSenders) ? [...settings.allowedSenders] : [];
+		if (!allowed.some((a) => a.toLowerCase() === normalizedSender)) {
+			allowed.push(normalizedSender);
+		}
+		// Remove from local blockedSenders if present
+		if (Array.isArray(settings.blockedSenders)) {
+			settings.blockedSenders = (settings.blockedSenders as string[]).filter(
+				(x) => x.toLowerCase() !== normalizedSender,
+			);
+		}
+		settings.allowedSenders = allowed;
+		await writeMailboxSettings(c.env, mailboxId, settings);
+
+		let restoredCount = 0;
+		if (restoreToInbox) {
+			restoredCount = await (c.var.mailboxStub as any).moveEmailsBySender(normalizedSender, Folders.INBOX);
+		}
+
+		return c.json({
+			success: true,
+			sender: normalizedSender,
+			allowed: settings.allowedSenders,
+			restoredCount,
+		});
+	} catch (err: any) {
+		console.error("Failed to allow sender:", err);
+		return c.json({ error: err?.message || "Failed to allow sender" }, 500);
+	}
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/allow-sender/:sender", async (c: AppContext) => {
+	try {
+		const mailboxId = c.req.param("mailboxId")!;
+		const raw = decodeURIComponent(c.req.param("sender")!).trim().toLowerCase();
+		const match = raw.match(/<([^>]+)>/);
+		const normalizedSender = match ? match[1].toLowerCase().trim() : raw;
+
+		const settings = await readMailboxSettings(c.env, mailboxId);
+		if (Array.isArray(settings.allowedSenders)) {
+			settings.allowedSenders = (settings.allowedSenders as string[]).filter(
+				(x) => x.toLowerCase() !== normalizedSender,
+			);
+			await writeMailboxSettings(c.env, mailboxId, settings);
+		}
+
+		return c.json({ success: true, sender: normalizedSender, allowed: settings.allowedSenders || [] });
+	} catch (err: any) {
+		console.error("Failed to remove allowed sender:", err);
+		return c.json({ error: err?.message || "Failed to remove allowed sender" }, 500);
+	}
+});
+
 app.delete("/api/v1/mailboxes/:mailboxId/block-sender/:sender", async (c: AppContext) => {
 	try {
 		const mailboxId = c.req.param("mailboxId")!;
-		const sender = decodeURIComponent(c.req.param("sender")!).trim().toLowerCase();
+		const raw = decodeURIComponent(c.req.param("sender")!).trim().toLowerCase();
+		const match = raw.match(/<([^>]+)>/);
+		const sender = match ? match[1].toLowerCase().trim() : raw;
 		const scope = c.req.query("scope") || "mailbox";
 
 		let mailboxBlocked: string[] = [];
@@ -677,10 +799,20 @@ app.delete("/api/v1/mailboxes/:mailboxId/block-sender/:sender", async (c: AppCon
 			for (const mb of allMailboxes) {
 				try {
 					const mbSettings = await readMailboxSettings(c.env, mb.id);
+					let changed = false;
 					if (Array.isArray(mbSettings.blockedSenders) && mbSettings.blockedSenders.includes(sender)) {
 						mbSettings.blockedSenders = (mbSettings.blockedSenders as string[]).filter(
 							(x) => x.toLowerCase() !== sender,
 						);
+						changed = true;
+					}
+					if (Array.isArray(mbSettings.allowedSenders) && mbSettings.allowedSenders.includes(sender)) {
+						mbSettings.allowedSenders = (mbSettings.allowedSenders as string[]).filter(
+							(x) => x.toLowerCase() !== sender,
+						);
+						changed = true;
+					}
+					if (changed) {
 						await writeMailboxSettings(c.env, mb.id, mbSettings);
 					}
 				} catch (e) {
@@ -861,8 +993,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 	try {
 		const settings = await readMailboxSettings(env, mailboxId);
 		const mailboxBlocked = Array.isArray(settings.blockedSenders) ? (settings.blockedSenders as string[]) : [];
+		const mailboxAllowed = Array.isArray(settings.allowedSenders) ? (settings.allowedSenders as string[]) : [];
 		const globalBlocked = await getGlobalBlockedSenders(env);
-		if (isSenderBlocked(senderAddress, mailboxBlocked) || isSenderBlocked(senderAddress, globalBlocked)) {
+		const isAllowed = isSenderBlocked(senderAddress, mailboxAllowed);
+		const isBlocked = !isAllowed && (isSenderBlocked(senderAddress, mailboxBlocked) || isSenderBlocked(senderAddress, globalBlocked));
+		if (isBlocked) {
 			targetFolder = Folders.TRASH;
 			console.log(`Inbound email from ${senderAddress} is blocked for ${mailboxId}. Routed directly to Trash.`);
 		}

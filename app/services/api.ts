@@ -134,6 +134,8 @@ const api = {
 		post<{ count: number }>(`/api/v1/mailboxes/${mailboxId}/emails/batch/delete`, { ids }),
 	emptyTrash: (mailboxId: string) =>
 		del<{ success: boolean }>(`/api/v1/mailboxes/${mailboxId}/trash`),
+	emptyAllTrash: () =>
+		del<{ success: boolean }>(`/api/v1/trash`),
 	moveEmail: (mailboxId: string, id: string, folderId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${id}/move`, { folderId }),
 	batchMoveEmails: (mailboxId: string, ids: string[], folderId: string) =>
@@ -176,9 +178,9 @@ const api = {
 	searchEmails: (mailboxId: string, params: Record<string, string>) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/search`, { params }),
 
-	// Blocked Senders
+	// Blocked & Allowed Senders
 	getBlockedSenders: (mailboxId: string) =>
-		get<{ mailboxBlocked: string[]; globalBlocked: string[] }>(
+		get<{ mailboxBlocked: string[]; globalBlocked: string[]; mailboxAllowed?: string[] }>(
 			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/block-sender`,
 		),
 	blockSender: (
@@ -197,6 +199,15 @@ const api = {
 	unblockSender: (mailboxId: string, sender: string, scope?: "mailbox" | "global") =>
 		del<{ success: boolean; sender: string; mailboxBlocked: string[]; globalBlocked: string[] }>(
 			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/block-sender/${encodeURIComponent(sender)}${scope ? `?scope=${scope}` : ""}`,
+		),
+	allowSender: (mailboxId: string, sender: string, restoreToInbox = true) =>
+		post<{ success: boolean; sender: string; allowed: string[]; restoredCount: number }>(
+			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/allow-sender`,
+			{ sender, restoreToInbox },
+		),
+	removeAllowedSender: (mailboxId: string, sender: string) =>
+		del<{ success: boolean; sender: string; allowed: string[] }>(
+			`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/allow-sender/${encodeURIComponent(sender)}`,
 		),
 };
 

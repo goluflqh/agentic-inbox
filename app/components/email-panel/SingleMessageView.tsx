@@ -39,7 +39,12 @@ export default function SingleMessageView({
 		staleTime: 30_000,
 	});
 
-	const senderNormalized = (email.sender || "").toLowerCase().trim();
+	const senderNormalized = useMemo(() => {
+		const s = (email.sender || "").toLowerCase().trim();
+		const match = s.match(/<([^>]+)>/);
+		return match ? match[1].toLowerCase().trim() : s;
+	}, [email.sender]);
+
 	const isGlobalBlocked = (blockedData?.globalBlocked || []).some((p) => {
 		const norm = p.toLowerCase().trim();
 		return norm.startsWith("@") ? senderNormalized.endsWith(norm) : senderNormalized === norm;
@@ -48,7 +53,11 @@ export default function SingleMessageView({
 		const norm = p.toLowerCase().trim();
 		return norm.startsWith("@") ? senderNormalized.endsWith(norm) : senderNormalized === norm;
 	});
-	const isBlocked = isGlobalBlocked || isMailboxBlocked;
+	const isMailboxAllowed = (blockedData?.mailboxAllowed || []).some((p) => {
+		const norm = p.toLowerCase().trim();
+		return norm.startsWith("@") ? senderNormalized.endsWith(norm) : senderNormalized === norm;
+	});
+	const isBlocked = !isMailboxAllowed && (isGlobalBlocked || isMailboxBlocked);
 
 	const handleUnblock = async () => {
 		if (!mailboxId) return;
@@ -62,6 +71,37 @@ export default function SingleMessageView({
 			});
 		} catch {
 			toastManager.add({ title: "Failed to unblock sender", variant: "error" });
+		}
+	};
+
+	const handleAllowThisMailbox = async () => {
+		if (!mailboxId) return;
+		try {
+			const res = await api.allowSender(mailboxId, senderNormalized, true);
+			queryClient.invalidateQueries({ queryKey: ["blocked-senders", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
+			toastManager.add({
+				title: `Đã mở chặn cho ${mailboxId}`,
+				description: `Đã cho phép ${senderNormalized} gửi thư đến hòm thư này${res.restoredCount > 0 ? ` và khôi phục ${res.restoredCount} thư về Inbox` : ""}.`,
+			});
+		} catch {
+			toastManager.add({ title: "Failed to allow sender", variant: "error" });
+		}
+	};
+
+	const handleRemoveAllowed = async () => {
+		if (!mailboxId) return;
+		try {
+			await api.removeAllowedSender(mailboxId, senderNormalized);
+			queryClient.invalidateQueries({ queryKey: ["blocked-senders", mailboxId] });
+			toastManager.add({
+				title: `Đã hủy ngoại lệ cho ${senderNormalized}`,
+				description: "Áp dụng lại quy tắc chặn đối với người gửi này.",
+			});
+		} catch {
+			toastManager.add({ title: "Failed to remove allow exception", variant: "error" });
 		}
 	};
 
@@ -149,20 +189,40 @@ export default function SingleMessageView({
 						{mailboxId && (
 							isBlocked ? (
 								<>
-									<Tooltip
-										content={isGlobalBlocked ? "Unblock this sender across all accounts" : `Unblock this sender for ${mailboxId}`}
-										side="bottom"
-										asChild
-									>
-										<Button
-											variant="secondary"
-											size="sm"
-											icon={<ProhibitIcon size={14} className="text-kumo-warning" />}
-											onClick={handleUnblock}
-										>
-											{isGlobalBlocked ? "Unblock All Accounts" : "Unblock"}
-										</Button>
-									</Tooltip>
+									{isGlobalBlocked ? (
+										<>
+											<Tooltip content={`Cho phép người gửi này gửi thư đến riêng ${mailboxId} (bỏ qua chặn Global)`} side="bottom" asChild>
+												<Button
+													variant="secondary"
+													size="sm"
+													icon={<ProhibitIcon size={14} className="text-kumo-warning" />}
+													onClick={handleAllowThisMailbox}
+												>
+													Mở riêng acc này
+												</Button>
+											</Tooltip>
+											<Tooltip content="Mở chặn người gửi này trên tất cả các tài khoản" side="bottom" asChild>
+												<Button
+													variant="ghost"
+													size="sm"
+													onClick={handleUnblock}
+												>
+													Mở tất cả acc
+												</Button>
+											</Tooltip>
+										</>
+									) : (
+										<Tooltip content={`Unblock this sender for ${mailboxId}`} side="bottom" asChild>
+											<Button
+												variant="secondary"
+												size="sm"
+												icon={<ProhibitIcon size={14} className="text-kumo-warning" />}
+												onClick={handleUnblock}
+											>
+												Unblock
+											</Button>
+										</Tooltip>
+									)}
 									{email.folder_id !== Folders.TRASH && (
 										<Tooltip content="Chuyển toàn bộ email cũ từ người gửi này vào Thùng rác" side="bottom" asChild>
 											<Button
@@ -177,6 +237,16 @@ export default function SingleMessageView({
 										</Tooltip>
 									)}
 								</>
+							) : isMailboxAllowed ? (
+								<Tooltip content="Hủy quyền ưu tiên và chặn lại người gửi này theo quy tắc Global" side="bottom" asChild>
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={handleRemoveAllowed}
+									>
+										Chặn lại cho acc này
+									</Button>
+								</Tooltip>
 							) : (
 								<Tooltip content={`Block ${email.sender}`} side="bottom" asChild>
 									<Button

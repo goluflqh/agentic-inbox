@@ -36,6 +36,7 @@ import {
 	useBatchDeleteEmails,
 	useBatchMoveEmails,
 	useDeleteEmail,
+	useEmptyAllTrash,
 	useMarkThreadRead,
 	useMoveEmail,
 	useUpdateEmail,
@@ -300,8 +301,22 @@ export default function AllEmailListRoute() {
 	const moveEmailMut = useMoveEmail();
 	const batchMoveMut = useBatchMoveEmails();
 	const batchDeleteMut = useBatchDeleteEmails();
+	const emptyAllTrashMut = useEmptyAllTrash();
 
 	const isTrashFolder = folder === Folders.TRASH;
+
+	const handleEmptyAllTrash = async () => {
+		if (!window.confirm("Bạn có chắc chắn muốn xóa vĩnh viễn toàn bộ thư trong Thùng rác của TẤT CẢ các tài khoản? Hành động này không thể hoàn tác.")) {
+			return;
+		}
+		try {
+			await emptyAllTrashMut.mutateAsync();
+			closePanel();
+			setSelectedKeys(new Set());
+		} catch (err: any) {
+			console.error("Failed to empty all trash:", err);
+		}
+	};
 
 	const handleRowDelete = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();
@@ -587,6 +602,17 @@ export default function AllEmailListRoute() {
 								))}
 							</Select>
 						</div>
+					)}
+					{isTrashFolder && totalCount > 0 && (
+						<Button
+							variant="secondary"
+							size="sm"
+							icon={<TrashIcon size={14} className="text-kumo-danger" />}
+							onClick={handleEmptyAllTrash}
+							loading={emptyAllTrashMut.isPending}
+						>
+							Empty All Trash
+						</Button>
 					)}
 					<Tooltip content={isRefreshing ? "Refreshing..." : "Refresh"} side="bottom" asChild>
 						<Button

@@ -698,18 +698,27 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	async emptyTrash() {
-		const trashEmails = this.db
-			.select({ id: schema.emails.id })
-			.from(schema.emails)
-			.where(
-				sql`${schema.emails.folder_id} = (SELECT id FROM folders WHERE name = 'trash' OR id = 'trash' LIMIT 1)`
-			)
-			.all();
+		// Get all attachments for trash emails first
+		const emailAttachments = [...this.ctx.storage.sql.exec(
+			`SELECT a.id, a.email_id, a.filename
+			 FROM attachments a
+			 JOIN emails e ON a.email_id = e.id
+			 WHERE e.folder_id = 'trash' OR e.folder_id = (SELECT id FROM folders WHERE name = 'trash' OR id = 'trash' LIMIT 1)`
+		)] as any[];
 
-		if (trashEmails.length === 0) return [];
+		// Delete attachments of trash emails in one atomic statement
+		[...this.ctx.storage.sql.exec(
+			`DELETE FROM attachments WHERE email_id IN (
+				SELECT id FROM emails WHERE folder_id = 'trash' OR folder_id = (SELECT id FROM folders WHERE name = 'trash' OR id = 'trash' LIMIT 1)
+			)`
+		)];
 
-		const emailIds = trashEmails.map((e) => e.id);
-		return this.deleteEmails(emailIds);
+		// Delete all trash emails in one atomic statement
+		[...this.ctx.storage.sql.exec(
+			`DELETE FROM emails WHERE folder_id = 'trash' OR folder_id = (SELECT id FROM folders WHERE name = 'trash' OR id = 'trash' LIMIT 1)`
+		)];
+
+		return emailAttachments;
 	}
 
 	async getAttachment(id: string) {
@@ -864,7 +873,10 @@ export class MailboxDO extends DurableObject<Env> {
 	}
 
 	async moveEmailsBySender(sender: string, targetFolderId: string): Promise<number> {
-		const s = sender.toLowerCase().trim();
+		const raw = (sender || "").toLowerCase().trim();
+		if (!raw) return 0;
+		const match = raw.match(/<([^>]+)>/);
+		const s = match ? match[1].toLowerCase().trim() : raw;
 		const isDomain = s.startsWith("@");
 		const targetFolder = targetFolderId.toLowerCase().trim();
 
@@ -910,8 +922,9 @@ export class MailboxDO extends DurableObject<Env> {
 			   AND folder_id != ?1`;
 
 		const pattern = isDomain ? "%" + s : s;
-		const result = this.ctx.storage.sql.exec(query, destFolderId, pattern);
-		return typeof result.rowsWritten === "number" ? result.rowsWritten : 0;
+		[...this.ctx.storage.sql.exec(query, destFolderId, pattern)];
+		const changesRow = [...this.ctx.storage.sql.exec(`SELECT changes() as cnt`)][0] as { cnt: number } | undefined;
+		return changesRow?.cnt ?? 0;
 	}
 
 	// ── Search (raw SQL — dynamic condition builder) ───────────────

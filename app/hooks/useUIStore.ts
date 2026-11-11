@@ -50,7 +50,7 @@ export const useUIStore = create<UIState>((set, get) => ({
 	composeOptions: { mode: "new", originalEmail: null },
 	isComposeModalOpen: false,
 	isSidebarOpen: false,
-	isAgentPanelOpen: true,
+	isAgentPanelOpen: typeof window !== "undefined" ? localStorage.getItem("agent_panel_open") === "true" : false,
 
 	selectEmail: (id) => set({ selectedEmailId: id, isComposing: false }),
 
@@ -82,7 +82,14 @@ export const useUIStore = create<UIState>((set, get) => ({
 	closeSidebar: () => set({ isSidebarOpen: false }),
 	toggleSidebar: () => set({ isSidebarOpen: !get().isSidebarOpen }),
 
-	toggleAgentPanel: () => set({ isAgentPanelOpen: !get().isAgentPanelOpen }),
+	toggleAgentPanel: () =>
+		set((state) => {
+			const next = !state.isAgentPanelOpen;
+			if (typeof window !== "undefined") {
+				localStorage.setItem("agent_panel_open", String(next));
+			}
+			return { isAgentPanelOpen: next };
+		}),
 
 	openComposeModal: (options) =>
 		set({

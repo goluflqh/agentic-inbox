@@ -281,6 +281,19 @@ export function useEmptyTrash() {
 	});
 }
 
+export function useEmptyAllTrash() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: () => api.emptyAllTrash(),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
+			qc.invalidateQueries({ queryKey: ["emails"] });
+			qc.invalidateQueries({ queryKey: ["folders"] });
+			qc.invalidateQueries({ queryKey: ["mailboxes"] });
+		},
+	});
+}
+
 export function useSaveDraft() {
 	const invalidate = useInvalidateEmailData();
 	return useMutation({

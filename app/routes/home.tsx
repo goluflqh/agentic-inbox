@@ -316,7 +316,7 @@ export default function HomeRoute() {
 								</div>
 							)}
 						</RouterLink>
-						<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+						<div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
 							<RouterLink
 								to={allInboxLink("unread")}
 								state={{ from: `${location.pathname}${location.search}` }}
@@ -346,6 +346,19 @@ export default function HomeRoute() {
 								<div className="min-w-0 flex-1">
 									<div className="text-sm font-semibold text-kumo-default">Starred</div>
 									<div className="text-xs text-kumo-subtle">Pinned conversations</div>
+								</div>
+							</RouterLink>
+							<RouterLink
+								to={`/all/emails/trash${domainFilter !== "all" ? `?domain=${encodeURIComponent(domainFilter)}` : ""}`}
+								state={{ from: `${location.pathname}${location.search}` }}
+								className="flex items-center gap-3 rounded-lg border border-kumo-line bg-kumo-base px-4 py-3 no-underline transition-colors hover:bg-kumo-tint"
+							>
+								<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-subtle">
+									<TrashIcon size={18} />
+								</div>
+								<div className="min-w-0 flex-1">
+									<div className="text-sm font-semibold text-kumo-default">All Trash</div>
+									<div className="text-xs text-kumo-subtle">Thùng rác tất cả tài khoản</div>
 								</div>
 							</RouterLink>
 						</div>

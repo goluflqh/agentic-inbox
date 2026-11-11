@@ -141,6 +141,39 @@ export default function SettingsRoute() {
 		}
 	};
 
+	const handleAllowThisMailbox = async (sender: string) => {
+		if (!mailboxId) return;
+		try {
+			const res = await api.allowSender(mailboxId, sender, true);
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			queryClient.invalidateQueries({ queryKey: ["folders", mailboxId] });
+			toastManager.add({
+				title: `Đã mở chặn cho ${mailboxId}`,
+				description: `Đã cho phép ${sender} gửi thư đến tài khoản này${res.restoredCount > 0 ? ` và khôi phục ${res.restoredCount} thư về Inbox` : ""}.`,
+			});
+			refetchBlocked();
+		} catch {
+			toastManager.add({ title: "Failed to allow sender", variant: "error" });
+		}
+	};
+
+	const handleRemoveAllowed = async (sender: string) => {
+		if (!mailboxId) return;
+		try {
+			await api.removeAllowedSender(mailboxId, sender);
+			queryClient.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			queryClient.invalidateQueries({ queryKey: ["all-emails"] });
+			toastManager.add({
+				title: `Đã hủy ngoại lệ cho ${sender}`,
+				description: "Áp dụng lại quy tắc chặn đối với tài khoản này.",
+			});
+			refetchBlocked();
+		} catch {
+			toastManager.add({ title: "Failed to remove allow exception", variant: "error" });
+		}
+	};
+
 	if (!mailbox) {
 		return (
 			<div className="flex justify-center py-20">
@@ -276,32 +309,61 @@ export default function SettingsRoute() {
 							</div>
 						) : (
 							<div className="divide-y divide-kumo-line rounded-lg border border-kumo-line bg-kumo-recessed overflow-hidden">
-								{blockedData.globalBlocked.map((sender) => (
-									<div key={`gb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
-										<div className="flex items-center gap-2 min-w-0">
-											<span className="font-mono text-kumo-default truncate">{sender}</span>
-											<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10">All mailboxes (Global)</Badge>
+								{blockedData.globalBlocked.map((sender) => {
+									const isAllowedForThis = (blockedData.mailboxAllowed || []).some(
+										(a) => a.toLowerCase() === sender.toLowerCase(),
+									);
+									return (
+										<div key={`gb-${sender}`} className="flex items-center justify-between px-3 py-2 text-xs">
+											<div className="flex items-center gap-2 min-w-0">
+												<span className="font-mono text-kumo-default truncate">{sender}</span>
+												{isAllowedForThis ? (
+													<Badge variant="primary" className="text-[10px]">Đã mở chặn riêng tài khoản này</Badge>
+												) : (
+													<Badge variant="outline" className="text-[10px] text-kumo-warning border-kumo-warning/30 bg-kumo-warning/10">All mailboxes (Global)</Badge>
+												)}
+											</div>
+											<div className="flex items-center gap-1.5">
+												<Button
+													variant="outline"
+													size="xs"
+													onClick={() => handleCleanBlockedSender(sender, "global")}
+													loading={cleaningSender === sender}
+													title="Dọn sạch toàn bộ email cũ từ người gửi này vào Thùng rác"
+												>
+													Dọn mail cũ vào Trash
+												</Button>
+												{isAllowedForThis ? (
+													<Button
+														variant="outline"
+														size="xs"
+														onClick={() => handleRemoveAllowed(sender)}
+														title="Hủy ngoại lệ và chặn lại người gửi này trên tài khoản này"
+													>
+														Chặn lại cho acc này
+													</Button>
+												) : (
+													<Button
+														variant="outline"
+														size="xs"
+														onClick={() => handleAllowThisMailbox(sender)}
+														title="Cho phép người gửi này gửi thư đến riêng tài khoản này (vẫn chặn ở các tài khoản khác)"
+													>
+														Mở riêng acc này
+													</Button>
+												)}
+												<Button
+													variant="secondary"
+													size="xs"
+													onClick={() => handleUnblock(sender, "global")}
+													title="Mở chặn cho tất cả các tài khoản trên hệ thống"
+												>
+													Unblock for all accounts
+												</Button>
+											</div>
 										</div>
-										<div className="flex items-center gap-1.5">
-											<Button
-												variant="outline"
-												size="xs"
-												onClick={() => handleCleanBlockedSender(sender, "global")}
-												loading={cleaningSender === sender}
-												title="Dọn sạch toàn bộ email cũ từ người gửi này vào Thùng rác"
-											>
-												Dọn mail cũ vào Trash
-											</Button>
-											<Button
-												variant="secondary"
-												size="xs"
-												onClick={() => handleUnblock(sender, "global")}
-											>
-												Unblock for all accounts
-											</Button>
-										</div>
-									</div>
-								))}
+									);
+								})}
 								{(blockedData.mailboxBlocked || [])
 									.filter((s) => !blockedData.globalBlocked.some((g) => g.toLowerCase() === s.toLowerCase()))
 									.map((sender) => (
