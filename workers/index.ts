@@ -354,6 +354,29 @@ app.get("/api/v1/all-emails", async (c) => {
 	});
 });
 
+app.post("/api/v1/all-emails/mark-all-read", async (c: AppContext) => {
+	try {
+		const { folder } = (await c.req.json().catch(() => ({}))) as { folder?: string };
+		const allMailboxes = await listMailboxes(c.env.BUCKET);
+		let count = 0;
+		await Promise.all(
+			allMailboxes.map(async (mb) => {
+				try {
+					const stub = getMailboxStub(c.env, mb.id);
+					const marked = await (stub as any).markAllRead(folder);
+					count += marked;
+				} catch (e) {
+					console.error(`Failed to mark read for ${mb.id}:`, e);
+				}
+			}),
+		);
+		return c.json({ success: true, count });
+	} catch (err: any) {
+		console.error("Failed to mark all emails read:", err);
+		return c.json({ error: err?.message || "Failed to mark all emails read" }, 500);
+	}
+});
+
 app.post("/api/v1/mailboxes", async (c) => {
 	const { name, settings, email: rawEmail } = CreateMailboxBody.parse(await c.req.json());
 	const email = rawEmail.toLowerCase();
@@ -848,6 +871,17 @@ app.get("/api/v1/mailboxes/:mailboxId/threads/:threadId", async (c: AppContext) 
 app.post("/api/v1/mailboxes/:mailboxId/threads/:threadId/read", async (c: AppContext) => {
 	await c.var.mailboxStub.markThreadRead(c.req.param("threadId")!);
 	return c.json({ status: "marked_read" });
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/mark-all-read", async (c: AppContext) => {
+	try {
+		const { folder } = (await c.req.json().catch(() => ({}))) as { folder?: string };
+		const count = await (c.var.mailboxStub as any).markAllRead(folder);
+		return c.json({ success: true, count });
+	} catch (err: any) {
+		console.error("Failed to mark all read:", err);
+		return c.json({ error: err?.message || "Failed to mark all read" }, 500);
+	}
 });
 
 // -- Reply / Forward ------------------------------------------------

@@ -222,6 +222,34 @@ export function useMarkThreadRead() {
 	});
 }
 
+export function useMarkAllRead() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({ mailboxId, folder }: { mailboxId: string; folder?: string }) =>
+			api.markAllRead(mailboxId, folder),
+		onSuccess: (_data, { mailboxId }) => {
+			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+			qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
+		},
+	});
+}
+
+export function useMarkAllEmailsRead() {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({ folder }: { folder?: string } = {}) =>
+			api.markAllEmailsRead(folder),
+		onSuccess: () => {
+			qc.invalidateQueries({ queryKey: ["all-emails"] });
+			qc.invalidateQueries({ queryKey: ["emails"] });
+			qc.invalidateQueries({ queryKey: ["folders"] });
+			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+		},
+	});
+}
+
 export function useDeleteEmail() {
 	const invalidate = useInvalidateEmailData();
 	return useMutation({

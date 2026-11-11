@@ -144,6 +144,10 @@ const api = {
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
+	markAllRead: (mailboxId: string, folder?: string) =>
+		post<{ success: boolean; count: number }>(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/mark-all-read`, { folder }),
+	markAllEmailsRead: (folder?: string) =>
+		post<{ success: boolean; count: number }>("/api/v1/all-emails/mark-all-read", { folder }),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
 		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
 	saveDraft: (

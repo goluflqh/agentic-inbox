@@ -641,6 +641,25 @@ export class MailboxDO extends DurableObject<Env> {
 		return { threadId, markedRead: true };
 	}
 
+	async markAllRead(folderId?: string): Promise<number> {
+		if (folderId) {
+			const targetFolder = folderId.toLowerCase().trim();
+			const folderRow = [...this.ctx.storage.sql.exec(
+				`SELECT id FROM folders WHERE LOWER(id) = ?1 OR LOWER(name) = ?1 LIMIT 1`,
+				targetFolder,
+			)][0] as { id: string } | undefined;
+			const destFolderId = folderRow?.id || targetFolder;
+			[...this.ctx.storage.sql.exec(
+				`UPDATE emails SET read = 1 WHERE (folder_id = ?1 OR folder_id = (SELECT id FROM folders WHERE name = ?1 LIMIT 1)) AND read = 0`,
+				destFolderId,
+			)];
+		} else {
+			[...this.ctx.storage.sql.exec(`UPDATE emails SET read = 1 WHERE read = 0`)];
+		}
+		const changesRow = [...this.ctx.storage.sql.exec(`SELECT changes() as cnt`)][0] as { cnt: number } | undefined;
+		return changesRow?.cnt ?? 0;
+	}
+
 	async deleteEmail(id: string) {
 		const email = this.db
 			.select({ id: schema.emails.id })

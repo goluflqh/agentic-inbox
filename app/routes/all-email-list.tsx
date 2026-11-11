@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Input, Pagination, Select, Tooltip } from "@cloudflare/kumo";
+import { Button, Input, Pagination, Select, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
 import {
 	ArchiveIcon,
 	ArrowBendUpLeftIcon,
@@ -37,6 +37,7 @@ import {
 	useBatchMoveEmails,
 	useDeleteEmail,
 	useEmptyAllTrash,
+	useMarkAllEmailsRead,
 	useMarkThreadRead,
 	useMoveEmail,
 	useUpdateEmail,
@@ -319,12 +320,27 @@ export default function AllEmailListRoute() {
 		}
 	};
 
+	const toastManager = useKumoToastManager();
 	const moveEmailMut = useMoveEmail();
 	const batchMoveMut = useBatchMoveEmails();
 	const batchDeleteMut = useBatchDeleteEmails();
 	const emptyAllTrashMut = useEmptyAllTrash();
+	const markAllEmailsReadMut = useMarkAllEmailsRead();
 
 	const isTrashFolder = folder === Folders.TRASH;
+
+	const handleMarkAllRead = async () => {
+		try {
+			const res = await markAllEmailsReadMut.mutateAsync({ folder: folder || Folders.INBOX });
+			setSelectedKeys(new Set());
+			toastManager.add({
+				title: "Marked all as read",
+				description: `Đã đánh dấu ${res.count ?? 0} thư là đã đọc.`,
+			});
+		} catch {
+			toastManager.add({ title: "Failed to mark all as read", variant: "error" });
+		}
+	};
 
 	const handleEmptyAllTrash = async () => {
 		if (!window.confirm("Bạn có chắc chắn muốn xóa vĩnh viễn toàn bộ thư trong Thùng rác của TẤT CẢ các tài khoản? Hành động này không thể hoàn tác.")) {
@@ -741,14 +757,40 @@ export default function AllEmailListRoute() {
 					</>
 				)}
 				{selectedCount === 0 && (
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled={unreadVisibleEmails.length === 0}
-						onClick={() => void markEmailsReadState(unreadVisibleEmails, true)}
-					>
-						Mark page read
-					</Button>
+					<>
+						<Button
+							variant="secondary"
+							size="sm"
+							disabled={unreadVisibleEmails.length === 0}
+							onClick={() => void markEmailsReadState(unreadVisibleEmails, true)}
+						>
+							Mark page read
+						</Button>
+						<Button
+							variant="outline"
+							size="sm"
+							icon={<EnvelopeOpenIcon size={14} />}
+							onClick={handleMarkAllRead}
+							loading={markAllEmailsReadMut.isPending}
+							title="Đánh dấu tất cả thư chưa đọc trong mục này là đã đọc"
+						>
+							Mark all read
+						</Button>
+					</>
+				)}
+				{allVisibleSelected && totalCount > emails.length && (
+					<span className="text-xs text-kumo-subtle flex items-center gap-1.5 ml-1">
+						<span>Đã chọn {emails.length} thư trên trang.</span>
+						<Button
+							variant="outline"
+							size="xs"
+							icon={<EnvelopeOpenIcon size={12} />}
+							onClick={handleMarkAllRead}
+							loading={markAllEmailsReadMut.isPending}
+						>
+							Đánh dấu tất cả {totalCount} thư là đã đọc
+						</Button>
+					</span>
 				)}
 				{selectedCount > 0 && (
 					<Button variant="ghost" size="sm" onClick={() => setSelectedKeys(new Set())}>
