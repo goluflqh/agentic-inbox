@@ -17,10 +17,12 @@ Record these before changing anything:
 
 - Domain
 - Desired mailbox and display name
-- Required API keys check (UPFRONT):
-  - `CLOUDFLARE_API_TOKEN` (must include `Zone:Edit`, `DNS:Edit`, `Email Routing:Edit`)
+- Required API keys & preflight check (UPFRONT):
+  - Run `powershell -ExecutionPolicy Bypass -File scripts/cf-preflight.ps1` (read-only) first to verify `cf`, `npx wrangler`, `RESEND_API_KEY` presence, auth source (`cf auth whoami`), accessible zones, and token capabilities (`Zone:Read`, `Zone:Edit`, `DNS:Read/Edit`, `Email Routing Rules:Read`, `Email Routing Settings:Read`, `Workers:Read`, `User Details:Read`).
+  - `CLOUDFLARE_API_TOKEN` (must include `Account Settings:Read`, `Workers Scripts:Edit`, `Zone:Edit`, `DNS:Edit`, `Email Routing Rules:Edit`, `Email Routing Settings:Read`, `User Details:Read` for full `cf` + `wrangler` automation; note that `CLOUDFLARE_API_TOKEN` env var overrides `cf auth login`)
   - Outbound API key: `RESEND_API_KEY` or `SMTP2GO_API_KEY`
   - **Rule**: If any key is missing or lacks required permissions, alert the user immediately at step 1 so they can provide/update it, enabling 100% automated API execution without manual dashboard intervention.
+  - Workspace automation skill: `.agents/skills/cf-domain-autopilot/SKILL.md` documents the 1-shot `cf` CLI + Wrangler domain automation workflow.
 - Current authoritative nameservers
 - Current website A/AAAA/CNAME records and HTTP status
 - Existing MX, SPF, DKIM, DMARC, CAA, and DNSSEC/DS records
@@ -44,10 +46,17 @@ Use this path only when the public authoritative nameservers are Cloudflare and 
    - Action: Send to Worker
    - Worker: `agentic-inbox`
    - Enabled: yes
-6. Add the domain to Worker configuration:
+6. Add the domain to Worker configuration (and optionally provision Cloudflare DNS / Email Routing / Resend via `cf` CLI):
 
    ```powershell
+   # Local config only:
    npm run domain:add -- example.com -Provider resend -Scenario Cloudflare
+
+   # Dry-run full Cloudflare + Resend automation + public DNS check via cf CLI:
+   npm run domain:add -- example.com -Provider resend -Scenario Cloudflare -ProvisionCloudflare -CreateZoneIfMissing -ProvisionResend -VerifyPublicDns -DryRun
+
+   # Live Cloudflare + Resend automation + public DNS check + Worker deploy:
+   npm run domain:add -- example.com -Provider resend -Scenario Cloudflare -ProvisionCloudflare -CreateZoneIfMissing -ProvisionResend -VerifyPublicDns -Deploy
    ```
 
 7. Update the production Worker variables to match `wrangler.jsonc`, then deploy. If the Wrangler token lacks permission, use the authenticated Cloudflare Dashboard and verify the live values afterward.
@@ -125,13 +134,14 @@ This path includes the extra DNS migration used for `minhhongdanang.page`.
 1. `wrangler.jsonc`
 2. Live Worker production variables
 
-The helper script changes local configuration only. It intentionally does not edit registrar DNS, Cloudflare routing rules, secrets, or live Worker variables.
+The helper script updates `wrangler.jsonc` when run without `-DryRun`, and optionally provisions Cloudflare zones/DNS/Email Routing (`-ProvisionCloudflare`, `-CreateZoneIfMissing`), Resend domains (`-ProvisionResend`), public DNS checks (`-VerifyPublicDns`), and Worker deploys (`-Deploy`). Use `-DryRun` to validate without mutating `wrangler.jsonc` or live resources.
 
 ## Final verification checklist
 
 Run every check; do not declare completion from dashboard state alone.
 
-1. Public NS is expected.
+1. Run `powershell -ExecutionPolicy Bypass -File scripts/cf-preflight.ps1` and `powershell -ExecutionPolicy Bypass -File scripts/test-domain-automation.ps1` to validate tooling, script syntax, and `-DryRun` flows.
+2. Public NS is expected (also checkable with `scripts/add-mail-domain.ps1 -VerifyPublicDns`).
 2. Website records still resolve to the expected origin.
 3. Website returns the expected HTTP status.
 4. Cloudflare Email Routing MX/SPF/DKIM are public.
