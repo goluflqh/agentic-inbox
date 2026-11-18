@@ -33,16 +33,18 @@ export default function EmailPanel({
 	emailId,
 	mailboxIdOverride,
 	folderOverride,
+	threadIdHint,
 }: {
 	emailId: string;
 	mailboxIdOverride?: string;
 	folderOverride?: string;
+	threadIdHint?: string | null;
 }) {
 	const { mailboxId: routeMailboxId, folder: routeFolder } = useParams<{ mailboxId: string; folder: string }>();
 	const mailboxId = mailboxIdOverride || routeMailboxId;
 	const folder = folderOverride || routeFolder;
 	const { data: email } = useEmail(mailboxId, emailId) as { data?: Email };
-	const { data: threadRepliesRaw } = useThreadReplies(mailboxId, email?.thread_id) as {
+	const { data: threadRepliesRaw } = useThreadReplies(mailboxId, email?.thread_id ?? threadIdHint) as {
 		data?: Email[];
 	};
 	const updateEmail = useUpdateEmail();

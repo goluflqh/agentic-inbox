@@ -246,6 +246,7 @@ export default function EmailListRoute() {
 
 	const emails = emailData?.emails ?? [];
 	const totalCount = emailData?.totalCount ?? 0;
+	const selectedEmail = emails.find((email) => email.id === selectedEmailId);
 	const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
 	const { data: folders = [] } = useFolders(mailboxId);
@@ -583,6 +584,7 @@ export default function EmailListRoute() {
 		<MailboxSplitView
 			selectedEmailId={selectedEmailId}
 			isComposing={isComposing}
+			threadIdHint={selectedEmail?.thread_count && selectedEmail.thread_count > 1 ? selectedEmail.thread_id : undefined}
 		>
 				{/* Folder header */}
 				<div className="flex flex-col gap-3 px-4 py-3.5 border-b border-kumo-line shrink-0 md:px-5">
@@ -887,11 +889,9 @@ export default function EmailListRoute() {
 													</span>
 												)}
 												{email.needs_reply && !email.has_draft && (
-													<Tooltip content="Needs reply" asChild>
-														<span className="shrink-0 text-kumo-warning">
-															<ArrowBendUpLeftIcon size={14} weight="bold" />
-														</span>
-													</Tooltip>
+													<span className="shrink-0 text-kumo-warning" title="Needs reply">
+														<ArrowBendUpLeftIcon size={14} weight="bold" />
+													</span>
 												)}
 												<span className="text-sm text-kumo-subtle shrink-0 ml-auto">
 													{formatListDate(email.date)}
@@ -920,58 +920,54 @@ export default function EmailListRoute() {
 
 										{/* Row actions */}
 										<div className="flex items-center shrink-0 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:focus-within:opacity-100">
-											<Tooltip content={email.read ? "Mark unread" : "Mark read"} asChild>
-												<Button
-													variant="ghost"
-													shape="square"
-													size="sm"
-													icon={email.read ? <EnvelopeSimpleIcon size={14} /> : <EnvelopeOpenIcon size={14} />}
-													onClick={(e) => {
-														e.stopPropagation();
-														if (mailboxId)
-															updateEmail.mutate({
-																mailboxId,
-																id: email.id,
-																data: { read: !email.read },
-															});
-													}}
-													aria-label={email.read ? "Mark unread" : "Mark read"}
-												/>
-											</Tooltip>
+											<Button
+												variant="ghost"
+												shape="square"
+												size="sm"
+												icon={email.read ? <EnvelopeSimpleIcon size={14} /> : <EnvelopeOpenIcon size={14} />}
+												onClick={(e) => {
+													e.stopPropagation();
+													if (mailboxId)
+														updateEmail.mutate({
+															mailboxId,
+															id: email.id,
+															data: { read: !email.read },
+														});
+												}}
+												title={email.read ? "Mark unread" : "Mark read"}
+												aria-label={email.read ? "Mark unread" : "Mark read"}
+											/>
 											{isTrashFolder ? (
 												<>
-													<Tooltip content="Restore to Inbox" asChild>
-														<Button
-															variant="ghost"
-															shape="square"
-															size="sm"
-															icon={<ArrowCounterClockwiseIcon size={14} />}
-															onClick={(e) => handleRowRestore(e, email.id)}
-															aria-label="Restore to Inbox"
-														/>
-													</Tooltip>
-													<Tooltip content="Delete permanently" asChild>
-														<Button
-															variant="ghost"
-															shape="square"
-															size="sm"
-															icon={<TrashIcon size={14} className="text-kumo-danger" />}
-															onClick={(e) => handleRowDelete(e, email.id)}
-															aria-label="Delete permanently"
-														/>
-													</Tooltip>
-												</>
-											) : (
-												<Tooltip content="Move to trash" asChild>
 													<Button
 														variant="ghost"
 														shape="square"
 														size="sm"
-														icon={<TrashIcon size={14} />}
-														onClick={(e) => handleRowDelete(e, email.id)}
-														aria-label="Move to trash"
+														icon={<ArrowCounterClockwiseIcon size={14} />}
+														onClick={(e) => handleRowRestore(e, email.id)}
+														title="Restore to Inbox"
+														aria-label="Restore to Inbox"
 													/>
-												</Tooltip>
+													<Button
+														variant="ghost"
+														shape="square"
+														size="sm"
+														icon={<TrashIcon size={14} className="text-kumo-danger" />}
+														onClick={(e) => handleRowDelete(e, email.id)}
+														title="Delete permanently"
+														aria-label="Delete permanently"
+													/>
+												</>
+											) : (
+												<Button
+													variant="ghost"
+													shape="square"
+													size="sm"
+													icon={<TrashIcon size={14} />}
+													onClick={(e) => handleRowDelete(e, email.id)}
+													title="Move to trash"
+													aria-label="Move to trash"
+												/>
 											)}
 										</div>
 									</div>

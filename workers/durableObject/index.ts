@@ -10,7 +10,7 @@ import * as schema from "../db/schema";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
-import { metadataFromStoredEmail } from "../lib/quick-email-metadata";
+import { metadataFromStoredEmail, QUICK_META_VERSION } from "../lib/quick-email-metadata";
 import { searchMatch } from "../lib/search-match";
 
 /**
@@ -92,6 +92,7 @@ interface EmailData {
 	raw_headers?: string | null;
 	auth_code?: string | null;
 	quick_link?: string | null;
+	quick_meta_version?: number;
 }
 
 interface AttachmentData {
@@ -489,20 +490,62 @@ export class MailboxDO extends DurableObject<Env> {
 
 	// ── Single email operations (Drizzle) ──────────────────────────
 
+	private persistQuickMetadataBatch(updates: { id: string; auth_code: string | null; quick_link: string | null }[]) {
+		if (updates.length === 0) return;
+		this.ctx.storage.transactionSync(() => {
+			for (const item of updates) {
+				this.ctx.storage.sql.exec(
+					`UPDATE emails SET auth_code = ?1, quick_link = ?2, quick_meta_version = ?3 WHERE id = ?4`,
+					item.auth_code,
+					item.quick_link,
+					QUICK_META_VERSION,
+					item.id,
+				);
+			}
+		});
+	}
+
 	async getQuickMetadata(ids: string[]) {
-		if (!ids.length) return [];
-		if (ids.length > 100) throw new Error("Too many email IDs");
-		const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
-		const rows = [...this.ctx.storage.sql.exec(
-			`SELECT id, subject, SUBSTR(body, 1, 40001) as body, thread_id FROM emails WHERE id IN (${placeholders})`,
-			...ids,
-		)] as { id: string; subject: string; body: string; thread_id: string | null }[];
+		const uniqueIds = [...new Set(ids)];
+		if (!uniqueIds.length) return [];
+
+		const rows: { id: string; auth_code: string | null; quick_link: string | null; thread_id: string | null; quick_meta_version: number }[] = [];
+		for (let i = 0; i < uniqueIds.length; i += 100) {
+			const chunk = uniqueIds.slice(i, i + 100);
+			const placeholders = chunk.map((_, idx) => `?${idx + 1}`).join(",");
+			rows.push(
+				...([...this.ctx.storage.sql.exec(
+					`SELECT id, auth_code, quick_link, thread_id, quick_meta_version FROM emails WHERE id IN (${placeholders})`,
+					...chunk,
+				)] as typeof rows),
+			);
+		}
+
+		const staleIds = rows.filter((r) => r.quick_meta_version !== QUICK_META_VERSION).map((r) => r.id);
+		const recomputedById = new Map<string, { auth_code: string | null; quick_link: string | null }>();
+		if (staleIds.length > 0) {
+			const updates: { id: string; auth_code: string | null; quick_link: string | null }[] = [];
+			for (let i = 0; i < staleIds.length; i += 100) {
+				const chunk = staleIds.slice(i, i + 100);
+				const placeholders = chunk.map((_, idx) => `?${idx + 1}`).join(",");
+				const staleRows = [...this.ctx.storage.sql.exec(
+					`SELECT id, subject, SUBSTR(body, 1, 40001) as body FROM emails WHERE id IN (${placeholders})`,
+					...chunk,
+				)] as { id: string; subject: string; body: string }[];
+				for (const sr of staleRows) {
+					const meta = metadataFromStoredEmail(sr.subject, sr.body);
+					recomputedById.set(sr.id, meta);
+					updates.push({ id: sr.id, ...meta });
+				}
+			}
+			this.persistQuickMetadataBatch(updates);
+		}
 
 		const results = new Map<string, { id: string; auth_code: string | null; quick_link: string | null }>();
 		const missingThreadLookup: { emailId: string; threadId: string }[] = [];
 
 		for (const row of rows) {
-			const meta = metadataFromStoredEmail(row.subject, row.body);
+			const meta = recomputedById.get(row.id) ?? { auth_code: row.auth_code ?? null, quick_link: row.quick_link ?? null };
 			results.set(row.id, { id: row.id, ...meta });
 			if (!meta.auth_code && !meta.quick_link && row.thread_id) {
 				missingThreadLookup.push({ emailId: row.id, threadId: row.thread_id });
@@ -511,11 +554,37 @@ export class MailboxDO extends DurableObject<Env> {
 
 		if (missingThreadLookup.length > 0) {
 			const uniqueThreads = [...new Set(missingThreadLookup.map((item) => item.threadId))];
-			const threadPlaceholders = uniqueThreads.map((_, i) => `?${i + 1}`).join(",");
-			const threadRows = [...this.ctx.storage.sql.exec(
-				`SELECT id, thread_id, subject, SUBSTR(body, 1, 40001) as body, date FROM emails WHERE thread_id IN (${threadPlaceholders}) ORDER BY date DESC`,
-				...uniqueThreads,
-			)] as { id: string; thread_id: string; subject: string; body: string; date: string }[];
+			const threadRows: { id: string; thread_id: string; auth_code: string | null; quick_link: string | null; quick_meta_version: number; date: string }[] = [];
+			for (let i = 0; i < uniqueThreads.length; i += 100) {
+				const chunk = uniqueThreads.slice(i, i + 100);
+				const threadPlaceholders = chunk.map((_, idx) => `?${idx + 1}`).join(",");
+				threadRows.push(
+					...([...this.ctx.storage.sql.exec(
+						`SELECT id, thread_id, auth_code, quick_link, quick_meta_version, date FROM emails WHERE thread_id IN (${threadPlaceholders}) ORDER BY date DESC`,
+						...chunk,
+					)] as typeof threadRows),
+				);
+			}
+
+			const staleThreadIds = threadRows.filter((tr) => tr.quick_meta_version !== QUICK_META_VERSION).map((tr) => tr.id);
+			const threadRecomputed = new Map<string, { auth_code: string | null; quick_link: string | null }>();
+			if (staleThreadIds.length > 0) {
+				const updates: { id: string; auth_code: string | null; quick_link: string | null }[] = [];
+				for (let i = 0; i < staleThreadIds.length; i += 100) {
+					const chunk = staleThreadIds.slice(i, i + 100);
+					const placeholders = chunk.map((_, idx) => `?${idx + 1}`).join(",");
+					const staleRows = [...this.ctx.storage.sql.exec(
+						`SELECT id, subject, SUBSTR(body, 1, 40001) as body FROM emails WHERE id IN (${placeholders})`,
+						...chunk,
+					)] as { id: string; subject: string; body: string }[];
+					for (const sr of staleRows) {
+						const meta = metadataFromStoredEmail(sr.subject, sr.body);
+						threadRecomputed.set(sr.id, meta);
+						updates.push({ id: sr.id, ...meta });
+					}
+				}
+				this.persistQuickMetadataBatch(updates);
+			}
 
 			const byThread = new Map<string, typeof threadRows>();
 			for (const tr of threadRows) {
@@ -529,7 +598,10 @@ export class MailboxDO extends DurableObject<Env> {
 				const candidates = byThread.get(threadId) || [];
 				for (const candidate of candidates) {
 					if (candidate.id === emailId) continue;
-					const meta = metadataFromStoredEmail(candidate.subject, candidate.body);
+					const meta = threadRecomputed.get(candidate.id) ?? {
+						auth_code: candidate.auth_code ?? null,
+						quick_link: candidate.quick_link ?? null,
+					};
 					if (meta.auth_code || meta.quick_link) {
 						results.set(emailId, { id: emailId, ...meta });
 						break;
@@ -556,9 +628,18 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.attachments.email_id, id))
 			.all();
 
+		let quickMeta = {
+			auth_code: email.auth_code ?? null,
+			quick_link: email.quick_link ?? null,
+		};
+		if (email.quick_meta_version !== QUICK_META_VERSION) {
+			quickMeta = metadataFromStoredEmail(email.subject, email.body);
+			this.persistQuickMetadataBatch([{ id: email.id, ...quickMeta }]);
+		}
+
 		return {
 			...email,
-			...metadataFromStoredEmail(email.subject, email.body),
+			...quickMeta,
 			read: !!email.read,
 			starred: !!email.starred,
 			attachments: emailAttachments,
@@ -599,13 +680,28 @@ export class MailboxDO extends DurableObject<Env> {
 			attachmentsByEmail.set(att.email_id, list);
 		}
 
-		return emailRows.map((email) => ({
-			...email,
-			...metadataFromStoredEmail(email.subject, email.body),
-			read: !!email.read,
-			starred: !!email.starred,
-			attachments: attachmentsByEmail.get(email.id) || [],
-		}));
+		const staleUpdates: { id: string; auth_code: string | null; quick_link: string | null }[] = [];
+		const result = emailRows.map((email) => {
+			let quickMeta = {
+				auth_code: (email.auth_code as string | null) ?? null,
+				quick_link: (email.quick_link as string | null) ?? null,
+			};
+			if (email.quick_meta_version !== QUICK_META_VERSION) {
+				quickMeta = metadataFromStoredEmail(email.subject, email.body);
+				staleUpdates.push({ id: email.id, ...quickMeta });
+			}
+			return {
+				...email,
+				...quickMeta,
+				read: !!email.read,
+				starred: !!email.starred,
+				attachments: attachmentsByEmail.get(email.id) || [],
+			};
+		});
+		if (staleUpdates.length > 0) {
+			this.persistQuickMetadataBatch(staleUpdates);
+		}
+		return result;
 	}
 
 	async updateEmail(
@@ -1246,6 +1342,7 @@ export class MailboxDO extends DurableObject<Env> {
 				raw_headers: email.raw_headers ?? null,
 				auth_code: email.auth_code ?? null,
 				quick_link: email.quick_link ?? null,
+				quick_meta_version: email.quick_meta_version ?? (email.auth_code !== undefined || email.quick_link !== undefined ? QUICK_META_VERSION : 0),
 			})
 			.run();
 

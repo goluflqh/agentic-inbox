@@ -11,6 +11,7 @@ interface MailboxSplitViewProps {
 	isComposing: boolean;
 	panelMailboxId?: string;
 	panelFolder?: string;
+	threadIdHint?: string | null;
 	children: ReactNode;
 }
 
@@ -19,6 +20,7 @@ export default function MailboxSplitView({
 	isComposing,
 	panelMailboxId,
 	panelFolder,
+	threadIdHint,
 	children,
 }: MailboxSplitViewProps) {
 	const isPanelOpen = selectedEmailId !== null || isComposing;
@@ -42,11 +44,11 @@ export default function MailboxSplitView({
 						<div className="flex flex-col h-full overflow-y-auto">
 							<ComposePanel />
 							<div className="border-t border-kumo-line">
-								<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} />
+								<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} threadIdHint={threadIdHint} />
 							</div>
 						</div>
 					) : selectedEmailId ? (
-						<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} />
+						<EmailPanel emailId={selectedEmailId} mailboxIdOverride={panelMailboxId} folderOverride={panelFolder} threadIdHint={threadIdHint} />
 					) : null}
 				</div>
 			)}

@@ -4,7 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
-import type { Email } from "~/types";
+import type { Email, Mailbox } from "~/types";
 import { queryKeys } from "./keys";
 
 // ---------- Types ----------
@@ -130,6 +130,20 @@ export function useSendEmail() {
 	});
 }
 
+const isMailboxListQuery = (mailboxId: string) => (query: { queryKey: readonly unknown[] }) =>
+	query.queryKey[0] === "emails" &&
+	query.queryKey[1] === mailboxId &&
+	typeof query.queryKey[2] === "object" &&
+	query.queryKey[2] !== null;
+
+function patchEmailReadOrStar(email: Email, patch: Partial<Email>): Email {
+	const next: Email = { ...email, ...patch };
+	if (typeof patch.read === "boolean") {
+		next.thread_unread_count = patch.read ? 0 : Math.max(1, email.thread_unread_count ?? 1);
+	}
+	return next;
+}
+
 export function useUpdateEmail() {
 	const qc = useQueryClient();
 	return useMutation({
@@ -140,34 +154,46 @@ export function useUpdateEmail() {
 		}: { mailboxId: string; id: string; data: unknown }) =>
 			api.updateEmail(mailboxId, id, data),
 		onMutate: async ({ mailboxId, id, data }) => {
-			// Only target list queries (3rd key element is an object = params),
-			// NOT detail queries (string = emailId) or thread queries.
-			const isListQuery = (query: { queryKey: readonly unknown[] }) =>
-				query.queryKey[0] === "emails" &&
-				query.queryKey[1] === mailboxId &&
-				typeof query.queryKey[2] === "object" &&
-				query.queryKey[2] !== null;
+			const patch = data as Partial<Email>;
+			const predicate = isMailboxListQuery(mailboxId);
 
 			// Cancel in-flight list queries so they don't overwrite our optimistic update
-			await qc.cancelQueries({
-				queryKey: ["emails", mailboxId],
-				predicate: isListQuery,
-			});
+			await Promise.all([
+				qc.cancelQueries({ queryKey: ["emails", mailboxId], predicate }),
+				qc.cancelQueries({ queryKey: ["all-emails"] }),
+			]);
 
-			// Snapshot current email list caches for rollback
+			// Snapshot current mailbox + all-emails list caches for rollback
 			const listQueries = qc.getQueriesData<{ emails: Email[]; totalCount: number }>({
 				queryKey: ["emails", mailboxId],
-				predicate: isListQuery,
+				predicate,
+			});
+			const allListQueries = qc.getQueriesData<{ emails: Email[]; totalCount: number }>({
+				queryKey: ["all-emails"],
 			});
 
-			// Optimistically patch every cached email list that contains this email
+			let prevWasUnread: boolean | null = null;
 			for (const [key, cached] of listQueries) {
 				if (!cached?.emails) continue;
 				qc.setQueryData(key, {
 					...cached,
-					emails: cached.emails.map((e) =>
-						e.id === id ? { ...e, ...(data as Partial<Email>) } : e,
-					),
+					emails: cached.emails.map((e) => {
+						if (e.id !== id) return e;
+						if (prevWasUnread === null) prevWasUnread = !e.read;
+						return patchEmailReadOrStar(e, patch);
+					}),
+				});
+			}
+
+			for (const [key, cached] of allListQueries) {
+				if (!cached?.emails) continue;
+				qc.setQueryData(key, {
+					...cached,
+					emails: cached.emails.map((e) => {
+						if (e.id !== id || (e.mailbox_id && e.mailbox_id !== mailboxId)) return e;
+						if (prevWasUnread === null) prevWasUnread = !e.read;
+						return patchEmailReadOrStar(e, patch);
+					}),
 				});
 			}
 
@@ -175,30 +201,53 @@ export function useUpdateEmail() {
 			const detailKey = queryKeys.emails.detail(mailboxId, id);
 			const prevDetail = qc.getQueryData<Email>(detailKey);
 			if (prevDetail) {
-				qc.setQueryData(detailKey, { ...prevDetail, ...(data as Partial<Email>) });
+				if (prevWasUnread === null) prevWasUnread = !prevDetail.read;
+				qc.setQueryData(detailKey, { ...prevDetail, ...patch });
 			}
 
-			return { listQueries, prevDetail, detailKey };
+			const prevMailboxes = qc.getQueryData<Mailbox[]>(queryKeys.mailboxes.all);
+			if (typeof patch.read === "boolean" && prevMailboxes && prevWasUnread !== null && prevWasUnread !== !patch.read) {
+				const delta = patch.read ? -1 : 1;
+				qc.setQueryData<Mailbox[]>(
+					queryKeys.mailboxes.all,
+					prevMailboxes.map((mb) =>
+						mb.id === mailboxId
+							? { ...mb, unreadCount: Math.max(0, (mb.unreadCount ?? 0) + delta) }
+							: mb,
+					),
+				);
+			}
+
+			return { listQueries, allListQueries, prevDetail, detailKey, prevMailboxes };
 		},
 		onError: (_err, _vars, context) => {
-			// Roll back optimistic updates on failure
 			if (context?.listQueries) {
 				for (const [key, cached] of context.listQueries) {
+					qc.setQueryData(key, cached);
+				}
+			}
+			if (context?.allListQueries) {
+				for (const [key, cached] of context.allListQueries) {
 					qc.setQueryData(key, cached);
 				}
 			}
 			if (context?.prevDetail) {
 				qc.setQueryData(context.detailKey, context.prevDetail);
 			}
+			if (context?.prevMailboxes) {
+				qc.setQueryData(queryKeys.mailboxes.all, context.prevMailboxes);
+			}
 		},
-		onSettled: (_data, _err, { mailboxId }) => {
-			// Always refetch to ensure server truth
-			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
-			qc.invalidateQueries({ queryKey: ["all-emails"] });
-			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
-			qc.invalidateQueries({
-				queryKey: queryKeys.folders.list(mailboxId),
-			});
+		onSettled: (_data, err, { mailboxId, data }) => {
+			const patch = data as Partial<Email>;
+			if (err) {
+				qc.invalidateQueries({ queryKey: ["emails", mailboxId], predicate: isMailboxListQuery(mailboxId) });
+				qc.invalidateQueries({ queryKey: ["all-emails"] });
+				qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+			}
+			if (typeof patch.read === "boolean") {
+				qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
+			}
 		},
 	});
 }
@@ -211,13 +260,78 @@ export function useMarkThreadRead() {
 			threadId,
 		}: { mailboxId: string; threadId: string }) =>
 			api.markThreadRead(mailboxId, threadId),
-		onSuccess: (_data, { mailboxId }) => {
-			qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+		onMutate: async ({ mailboxId, threadId }) => {
+			const predicate = isMailboxListQuery(mailboxId);
+			await Promise.all([
+				qc.cancelQueries({ queryKey: ["emails", mailboxId], predicate }),
+				qc.cancelQueries({ queryKey: ["all-emails"] }),
+			]);
+
+			const listQueries = qc.getQueriesData<{ emails: Email[]; totalCount: number }>({
+				queryKey: ["emails", mailboxId],
+				predicate,
+			});
+			const allListQueries = qc.getQueriesData<{ emails: Email[]; totalCount: number }>({
+				queryKey: ["all-emails"],
+			});
+
+			let unreadDelta = 0;
+			const markMatch = (e: Email) => {
+				if (e.thread_id !== threadId && e.id !== threadId) return e;
+				if (!unreadDelta && (e.thread_unread_count ?? (e.read ? 0 : 1)) > 0) {
+					unreadDelta = -(e.thread_unread_count ?? 1);
+				}
+				return { ...e, read: true, thread_unread_count: 0 };
+			};
+
+			for (const [key, cached] of listQueries) {
+				if (!cached?.emails) continue;
+				qc.setQueryData(key, { ...cached, emails: cached.emails.map(markMatch) });
+			}
+			for (const [key, cached] of allListQueries) {
+				if (!cached?.emails) continue;
+				qc.setQueryData(key, {
+					...cached,
+					emails: cached.emails.map((e) =>
+						!e.mailbox_id || e.mailbox_id === mailboxId ? markMatch(e) : e,
+					),
+				});
+			}
+
+			const prevMailboxes = qc.getQueryData<Mailbox[]>(queryKeys.mailboxes.all);
+			if (prevMailboxes && unreadDelta < 0) {
+				qc.setQueryData<Mailbox[]>(
+					queryKeys.mailboxes.all,
+					prevMailboxes.map((mb) =>
+						mb.id === mailboxId
+							? { ...mb, unreadCount: Math.max(0, (mb.unreadCount ?? 0) + unreadDelta) }
+							: mb,
+					),
+				);
+			}
+
+			return { listQueries, allListQueries, prevMailboxes };
+		},
+		onError: (_err, { mailboxId }, context) => {
+			if (context?.listQueries) {
+				for (const [key, cached] of context.listQueries) {
+					qc.setQueryData(key, cached);
+				}
+			}
+			if (context?.allListQueries) {
+				for (const [key, cached] of context.allListQueries) {
+					qc.setQueryData(key, cached);
+				}
+			}
+			if (context?.prevMailboxes) {
+				qc.setQueryData(queryKeys.mailboxes.all, context.prevMailboxes);
+			}
+			qc.invalidateQueries({ queryKey: ["emails", mailboxId], predicate: isMailboxListQuery(mailboxId) });
 			qc.invalidateQueries({ queryKey: ["all-emails"] });
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
-			qc.invalidateQueries({
-				queryKey: queryKeys.folders.list(mailboxId),
-			});
+		},
+		onSettled: (_data, _err, { mailboxId }) => {
+			qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
 		},
 	});
 }

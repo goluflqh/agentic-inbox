@@ -130,3 +130,95 @@ test('does not surface unrelated links as verification links', () => {
   assert.equal(extractQuickEmailMetadata({ html: '<a href="https://example.com/blog">Read our blog</a>' }).quick_link, null);
   assert.equal(extractQuickEmailMetadata({ html: '<a href="https://example.com/a/opaque">Sign in to your account</a>' }).quick_link, 'https://example.com/a/opaque');
 });
+
+test('extracts Mistral AI verification code alongside verification link in text and HTML', () => {
+  const mistralText = [
+    'Please verify your email address for your account',
+    '',
+    'Thank you for signing up. To ensure the security of your account, we need to verify your email address.',
+    '',
+    'Please use the following code to complete the verification process:',
+    '',
+    '039929',
+    '',
+    'or open the link below:',
+    '',
+    'https://auth.mistral.ai/self-service/verification?code=039929&flow=5ffa140f-f300-478f-82ff-8982de0f3f1f',
+    '',
+    'If you did not request this, you can ignore this email.',
+  ].join('\n');
+
+  const textResult = extractQuickEmailMetadata({
+    subject: 'Please verify your email address for your account',
+    text: mistralText,
+  });
+  assert.equal(textResult.auth_code, '039929');
+  assert.equal(
+    textResult.quick_link,
+    'https://auth.mistral.ai/self-service/verification?code=039929&flow=5ffa140f-f300-478f-82ff-8982de0f3f1f',
+  );
+
+  const mistralHtml = `
+    <p>Please use the following code</p>
+    <p>to complete the verification process:</p>
+    <pre style="font-size:28px;">039929</pre>
+    <p>or open the link below:</p>
+    <p>https://auth.mistral.ai/self-service/verification?code=039929&amp;flow=5ffa140f-f300-478f-82ff-8982de0f3f1f</p>
+    <footer><span>MISTRAL</span> <span>TERMS</span> © <span>2026</span></footer>
+  `;
+  const htmlResult = extractQuickEmailMetadata({
+    subject: 'Please verify your email address for your account',
+    html: mistralHtml,
+  });
+  assert.equal(htmlResult.auth_code, '039929');
+  assert.equal(
+    htmlResult.quick_link,
+    'https://auth.mistral.ai/self-service/verification?code=039929&flow=5ffa140f-f300-478f-82ff-8982de0f3f1f',
+  );
+});
+
+test('extracts Notion signup code even with <pre>, zero-width chars, uppercase tags, and footer years/zips', () => {
+  const notionHtml = `
+    <div style="display:none">Your Notion signup code&#847;&zwnj;&nbsp;</div>
+    <h1>Sign up for Notion</h1>
+    <p>You can sign up by entering the code on the sign up page in Notion, or simply by clicking the magic link.</p>
+    <pre style="background:#f4f4f4;padding:16px;">&#8203;628279&zwnj;</pre>
+    <a href="https://www.notion.so/login/magic?token=abc123def456">Sign in with Magic Link</a>
+    <footer>
+      <span>NOTES</span> <span>TASKS</span> <span>TERMS</span>
+      <span>© </span><span>2026</span> Notion Labs, Inc. San Francisco, CA <span>94107</span>
+    </footer>
+  `;
+  const result = extractQuickEmailMetadata({
+    subject: 'Your Notion signup code',
+    html: notionHtml,
+  });
+  assert.equal(result.auth_code, '628279');
+  assert.equal(result.quick_link, 'https://www.notion.so/login/magic?token=abc123def456');
+});
+
+test('keeps Grok code extraction and Bolt link-only behavior intact without fake codes', () => {
+  const grokResult = extractQuickEmailMetadata({
+    subject: 'Grok confirmation code: 085-451',
+    html: `
+      <h1>Validate your email</h1>
+      <p>Please use the code below to validate your email address.</p>
+      <div>085-451</div>
+      <footer>© <span>2026</span> SpaceX Super Intelligence LLC, Austin, TX <span>78701</span>, USA</footer>
+    `,
+  });
+  assert.equal(grokResult.auth_code, '085451');
+  assert.equal(grokResult.quick_link, null);
+
+  const boltResult = extractQuickEmailMetadata({
+    subject: 'Confirmation instructions',
+    html: `
+      <h1>Please confirm your email address</h1>
+      <p>Hey there - we're so excited to welcome you to Bolt! Please confirm this email address by clicking the link below.</p>
+      <a href="https://bolt.new/confirm?token=xyz987654">Confirm your email</a>
+      <footer>© <span>2026</span> StackBlitz</footer>
+    `,
+  });
+  assert.equal(boltResult.auth_code, null);
+  assert.equal(boltResult.quick_link, 'https://bolt.new/confirm?token=xyz987654');
+});

@@ -72,43 +72,53 @@ export default function EmailQuickActions({
 		}
 	};
 
+	const codeButton = authCode ? (
+		<Button
+			type="button"
+			variant={compact ? "ghost" : "secondary"}
+			size="sm"
+			icon={<CopyIcon size={14} />}
+			onClick={handleCopy}
+			title={compact ? "Copy code" : undefined}
+			aria-label={`Copy code ${authCode}`}
+			className={compact ? "!h-6 !min-h-6 !px-2 text-xs" : ""}
+		>
+			{copied ? "Copied" : authCode}
+		</Button>
+	) : null;
+
+	const linkAnchor = quickLink ? (
+		<a
+			href={quickLink}
+			target="_blank"
+			rel="noopener noreferrer"
+			onClick={handleContainerClick}
+			title={compact ? "Open link" : undefined}
+			className={`inline-flex items-center gap-1 rounded-md border border-kumo-line bg-kumo-base text-kumo-strong transition-colors hover:bg-kumo-tint hover:text-kumo-default ${
+				compact ? "min-h-6 px-2 text-xs" : "min-h-8 px-3 text-sm"
+			}`}
+			aria-label="Open email link"
+		>
+			<ArrowSquareOutIcon size={14} />
+			<span>{compact ? "Link" : "Open link"}</span>
+		</a>
+	) : null;
+
 	return (
 		<div
 			className={`flex flex-wrap items-center gap-1.5 ${className}`}
 			onClick={handleContainerClick}
 		>
-			{authCode && (
+			{codeButton && (compact ? codeButton : (
 				<Tooltip content="Copy code" side="bottom" asChild>
-					<Button
-						type="button"
-						variant={compact ? "ghost" : "secondary"}
-						size="sm"
-						icon={<CopyIcon size={14} />}
-						onClick={handleCopy}
-						aria-label={`Copy code ${authCode}`}
-						className={compact ? "!h-6 !min-h-6 !px-2 text-xs" : ""}
-					>
-						{copied ? "Copied" : authCode}
-					</Button>
+					{codeButton}
 				</Tooltip>
-			)}
-			{quickLink && (
+			))}
+			{linkAnchor && (compact ? linkAnchor : (
 				<Tooltip content="Open link" side="bottom" asChild>
-					<a
-						href={quickLink}
-						target="_blank"
-						rel="noopener noreferrer"
-						onClick={handleContainerClick}
-						className={`inline-flex items-center gap-1 rounded-md border border-kumo-line bg-kumo-base text-kumo-strong transition-colors hover:bg-kumo-tint hover:text-kumo-default ${
-							compact ? "min-h-6 px-2 text-xs" : "min-h-8 px-3 text-sm"
-						}`}
-						aria-label="Open email link"
-					>
-						<ArrowSquareOutIcon size={14} />
-						<span>{compact ? "Link" : "Open link"}</span>
-					</a>
+					{linkAnchor}
 				</Tooltip>
-			)}
+			))}
 		</div>
 	);
 }

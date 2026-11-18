@@ -8,7 +8,7 @@ import PostalMime from "postal-mime";
 import { z } from "zod";
 import { sendEmail } from "./email-sender";
 import { storeAttachments, type StoredAttachment } from "./lib/attachments";
-import { extractQuickEmailMetadata } from "./lib/quick-email-metadata";
+import { extractQuickEmailMetadata, QUICK_META_VERSION } from "./lib/quick-email-metadata";
 import { fetchPrefix } from "./lib/aggregate-page";
 import {
 	validateSender,
@@ -1087,6 +1087,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 		auth_code: quickMetadata.auth_code, quick_link: quickMetadata.quick_link,
+		quick_meta_version: QUICK_META_VERSION,
 	}, attachmentData);
 
 }

@@ -9,10 +9,12 @@ export interface QuickEmailMetadata {
 	quick_link: string | null;
 }
 
+export const QUICK_META_VERSION = 2;
+
 const CODE_LABEL =
-	"(?:\\b(?:verification\\s+code|security\\s+code|login\\s+code|sign[ -]?in\\s+code|signup\\s+code|sign[ -]?up\\s+code|access\\s+code|confirmation\\s+code|auth(?:entication)?\\s+code|temporary\\s+(?:[A-Za-z0-9_-]+\\s+){0,2}code|one[ -]?time\\s+(?:password|passcode|code)|code|passcode|otp|pin)(?!\\s+(?:snippets?|examples?|samples?|blocks?|owners?|review|base|repository|repositories|repo|editor|changes?))\\b|m[aã](?:\\s+(?:x[aá]c\\s+(?:nh[aậ]n|minh|th[uự]c)|đ[aă]ng\\s+nh[aậ]p|b[aả]o\\s+m[aậ]t|otp|code))?)";
+	"(?:\\b(?:verification\\s+code|security\\s+code|login\\s+code|sign[ -]?in\\s+code|signup\\s+code|sign[ -]?up\\s+code|access\\s+code|confirmation\\s+code|activation\\s+code|validation\\s+code|registration\\s+code|auth(?:entication)?\\s+code|temporary\\s+(?:[A-Za-z0-9_-]+\\s+){0,2}code|(?:\\d{1,2}[ -]?digit\\s+)code|one[ -]?time\\s+(?:password|passcode|code)|code|passcode|otp|pin)(?!\\s+(?:snippets?|examples?|samples?|blocks?|owners?|review|base|repository|repositories|repo|editor|changes?))\\b|m[aã](?:\\s+(?:x[aá]c\\s+(?:nh[aậ]n|minh|th[uự]c)|đ[aă]ng\\s+nh[aậ]p|b[aả]o\\s+m[aậ]t|otp|code))?)";
 const AUTH_CODE_CONTEXT_RE =
-	/(?:\b(?:(?:verification|verify|security|login|sign[ -]?in|signup|sign[ -]?up|access|confirmation|confirm|auth(?:entication)?|temporary|reset|recovery|2fa|mfa|single[ -]?use|one[ -]?time)[ \t]+(?:[A-Za-z0-9_-]+[ \t]+){0,2}(?:code|passcode|pin)|passcode|otp|one[ -]?time[ \t]+(?:password|passcode|code)|(?:your|the|this|enter|use|input|copy|share|request(?:ed)?)[ \t]+(?:(?:verification|verify|security|login|sign[ -]?in|signup|sign[ -]?up|access|confirmation|confirm|auth(?:entication)?|temporary|reset|recovery|2fa|mfa|single[ -]?use|one[ -]?time)[ \t]+)?code(?!\s+(?:snippets?|examples?|samples?|blocks?|owners?|review|base|repository|repositories|repo|editor|changes?|with\b|in\b))|code[ \t]+(?:is|expires|valid|to[ \t]+(?:log[ \t]*in|sign[ \t]*in|sign[ \t]*up|verify|confirm|continue)))\b|m[aã][ \t]+(?:x[aá]c[ \t]+(?:nh[aậ]n|minh|th[uự]c)|đ[aă]ng[ \t]+nh[aậ]p|b[aả]o[ \t]+m[aậ]t|otp|code)|^[ \t]*(?:otp|code|verification|verify)[ \t]*$)/im;
+	/(?:\b(?:(?:verification|verify|security|login|sign[ -]?in|signup|sign[ -]?up|access|confirmation|confirm|activation|activate|validation|validate|registration|auth(?:entication)?|temporary|reset|recovery|2fa|mfa|single[ -]?use|one[ -]?time|\d{1,2}[ -]?digit)[ \t]+(?:[A-Za-z0-9_-]+[ \t]+){0,2}(?:code|passcode|pin)|passcode|otp|one[ -]?time[ \t]+(?:password|passcode|code)|(?:your|the|this|enter|use|input|copy|share|request(?:ed)?)[ \t]+(?:(?:verification|verify|security|login|sign[ -]?in|signup|sign[ -]?up|access|confirmation|confirm|activation|activate|validation|validate|registration|auth(?:entication)?|temporary|reset|recovery|2fa|mfa|single[ -]?use|one[ -]?time|following|below|above|provided|unique|secret|\d{1,2}[ -]?digit)[ \t]+){0,2}code(?!\s+(?:snippets?|examples?|samples?|blocks?|owners?|review|base|repository|repositories|repo|editor|changes?|with\b|in\b))|code[ \t]+(?:is|below|above|expires|valid|to[ \t]+(?:log[ \t]*in|sign[ \t]*in|sign[ \t]*up|verify|confirm|continue|complete|finish|activate|validate|proceed|access|authenticate|register)))\b|m[aã][ \t]+(?:x[aá]c[ \t]+(?:nh[aậ]n|minh|th[uự]c)|đ[aă]ng[ \t]+nh[aậ]p|b[aả]o[ \t]+m[aậ]t|otp|code)|^[ \t]*(?:otp|code|verification|verify)[ \t]*$)/im;
 const NUMERIC_CODE_VALUE = "(?:\\d{3,4}[ -]\\d{3,4}|(?:\\d[ -]){3,7}\\d|\\d{4,8})";
 const ALPHANUM_CODE_VALUE = "(?:[A-Za-z0-9]{3,5}-[A-Za-z0-9]{3,5}|[A-Za-z0-9]{5,8})";
 const ANY_CODE_VALUE = `(?:${NUMERIC_CODE_VALUE}|${ALPHANUM_CODE_VALUE})`;
@@ -53,6 +55,7 @@ const MODEL_OR_TECH_TOKEN_RE =
 function decodeEntities(value: string): string {
 	return value
 		.replace(/&nbsp;/gi, " ")
+		.replace(/&zwnj;|&zwj;|&shy;/gi, "")
 		.replace(/&amp;/gi, "&")
 		.replace(/&lt;/gi, "<")
 		.replace(/&gt;/gi, ">")
@@ -69,7 +72,8 @@ function decodeEntities(value: string): string {
 			return num > 0 && num <= 0x10ffff && !(num >= 0xd800 && num <= 0xdfff)
 				? String.fromCodePoint(num)
 				: entity;
-		});
+		})
+		.replace(/[\u200B-\u200D\uFEFF\u00AD\u034F\u2060]/g, "");
 }
 
 function cleanHtmlSource(html: string): string {
@@ -82,14 +86,20 @@ function cleanHtmlSource(html: string): string {
 		.replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " ");
 }
 
+function isShortSingleTokenBlock(inner: string): boolean {
+	const plain = decodeEntities(inner.replace(/<[^>]+>/g, " ")).trim();
+	// Keep short single-token <code>123456</code> / <pre>039929</pre>, strip multi-token code snippets
+	return plain.length <= 16 && !/[=;:{}()[\]",]/.test(plain);
+}
+
 function stripProgrammingBlocks(html: string): string {
 	return cleanHtmlSource(html)
-		.replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, " ")
-		.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (full, inner: string) => {
-			const plain = decodeEntities(inner.replace(/<[^>]+>/g, " ")).trim();
-			// Keep short single-token <code>123456</code> or <code>f3EMVU</code>, strip multi-token code snippets
-			return plain.length <= 16 && !/[=;:{}()[\]",]/.test(plain) ? full : " ";
-		});
+		.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (full, inner: string) =>
+			isShortSingleTokenBlock(inner) ? full : " ",
+		)
+		.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (full, inner: string) =>
+			isShortSingleTokenBlock(inner) ? full : " ",
+		);
 }
 
 function stripHtml(html: string, removeProgrammingBlocks = false): string {
@@ -107,17 +117,24 @@ function stripHtml(html: string, removeProgrammingBlocks = false): string {
 }
 
 function isProgrammingParameterOrDate(raw: string, normalized: string, contextBefore: string, contextAfter: string): boolean {
-	// e.g., 2026-12-01 or 2026/12/01 around the match
+	// e.g., 2026-12-01 or 2026/12/01 or © 2026 around the match
 	if (/^\d{4}$/.test(normalized)) {
 		const year = Number(normalized);
 		if (year >= 1990 && year <= 2099) {
 			if (/[-/]\s*\d{1,2}\b/.test(contextAfter) || /\b\d{1,2}\s*[-/]\s*$/.test(contextBefore)) {
 				return true;
 			}
-			if (/\b(?:on|in|year|copyright|©|since|until|from)\s*$/i.test(contextBefore)) {
+			if (
+				/(?:©|\b(?:on|in|year|copyright|since|until|from))\s*$/i.test(contextBefore) ||
+				/^\s*(?:all\s+rights\b|copyright\b|©|\(c\)|inc\.?\b|llc\b|ltd\b|corp\b|gmbh\b)/i.test(contextAfter)
+			) {
 				return true;
 			}
 		}
+	}
+	// Reject US ZIP codes in address footers (e.g. "Austin, TX 78701")
+	if (/^\d{5}$/.test(normalized) && /,\s*[A-Z]{2}\s*$/.test(contextBefore)) {
+		return true;
 	}
 	if (/^#[0-9a-f]{6}$/i.test(`#${raw}`) && /#\s*$/.test(contextBefore)) {
 		return true;
@@ -189,7 +206,7 @@ function extractAuthCode(input: QuickEmailMetadataInput): string | null {
 	// Tier 1: Direct labeled patterns (e.g. "Your sign-in code is: 734812", "Code: f3EMVU", "734812 is your verification code")
 	const directForwardPatterns = [
 		new RegExp(
-			`${CODE_LABEL}(?:[ \\t]+(?:for|to|của|cho)[ \\t]+[^:\\n.]{1,35})?[ \\t]*(?:(?:is|là|:|=)[ \\t]*)+(?:\r?\n[ \\t]*)?(?<![A-Za-z0-9-])(${ANY_CODE_VALUE})(?![A-Za-z0-9-])`,
+			`${CODE_LABEL}(?:[ \\t]+(?:below|above|here))?(?:[ \\t]+(?:for|to|của|cho)[ \\t]+[^:\\n.]{1,60})?[ \\t]*(?:(?:is|là|:|=)[ \\t]*)+(?:\\r?\\n[ \\t]*){0,2}(?<![A-Za-z0-9-])(${ANY_CODE_VALUE})(?![A-Za-z0-9-])`,
 			"gi",
 		),
 		new RegExp(
@@ -254,8 +271,10 @@ function extractAuthCode(input: QuickEmailMetadataInput): string | null {
 		const cleanedHtml = stripProgrammingBlocks(input.html);
 		for (const match of cleanedHtml.matchAll(/>(?:\s|&nbsp;)*([A-Za-z0-9]{3,5}[ -][A-Za-z0-9]{3,5}|(?:\d[ -]){3,7}\d|[A-Za-z0-9]{4,8})(?:\s|&nbsp;)*<\//gi)) {
 			const idx = match.index ?? 0;
-			const before = stripHtml(cleanedHtml.slice(Math.max(0, idx - 120), idx)).slice(-45);
-			const after = stripHtml(cleanedHtml.slice(idx + match[0].length, idx + match[0].length + 60)).slice(0, 25);
+			const beforeHtml = cleanedHtml.slice(Math.max(0, idx - 240), idx + 1).replace(/^[^<]*>/, "");
+			const afterHtml = cleanedHtml.slice(idx + match[0].length - 2, idx + match[0].length + 80);
+			const before = stripHtml(beforeHtml).slice(-45);
+			const after = stripHtml(afterHtml).slice(0, 25);
 			addStandaloneCandidate(decodeEntities(match[1] || ""), before, after);
 		}
 	}
@@ -266,15 +285,17 @@ function extractAuthCode(input: QuickEmailMetadataInput): string | null {
 		addStandaloneCandidate(lines[i], prevLine, nextLine);
 	}
 
-	if (tier2Numeric.size === 1 && tier2Alphanum.size === 0) {
+	if (tier2Numeric.size === 1) {
 		return [...tier2Numeric][0];
 	}
 	if (tier2Alphanum.size === 1 && tier2Numeric.size === 0) {
 		return [...tier2Alphanum][0];
 	}
-	if (tier2Numeric.size === 1 && tier2Alphanum.size === 1) {
-		// Prefer numeric if both exist, or alphanumeric if it has digits
-		return [...tier2Numeric][0];
+	if (tier2Alphanum.size > 1 && tier2Numeric.size === 0) {
+		const alphanumWithDigits = [...tier2Alphanum].filter((token) => /\d/.test(token));
+		if (alphanumWithDigits.length === 1) {
+			return alphanumWithDigits[0];
+		}
 	}
 
 	return null;

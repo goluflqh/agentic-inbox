@@ -175,4 +175,8 @@ export const mailboxMigrations: Migration[] = [
             ALTER TABLE emails ADD COLUMN quick_link TEXT;
         `),
 	},
+	{
+		name: "10_add_quick_meta_version",
+		sql: txn(`ALTER TABLE emails ADD COLUMN quick_meta_version INTEGER NOT NULL DEFAULT 0;`),
+	},
 ];

@@ -28,6 +28,18 @@ const requestHandler = createRequestHandler(
 	import.meta.env.MODE,
 );
 
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function getCachedJWKS(certsUrl: URL) {
+	const key = certsUrl.toString();
+	let jwks = jwksCache.get(key);
+	if (!jwks) {
+		jwks = createRemoteJWKSet(certsUrl);
+		jwksCache.set(key, jwks);
+	}
+	return jwks;
+}
+
 function getAccessUrls(teamDomain: string) {
 	const certsPath = "/cdn-cgi/access/certs";
 	const teamUrl = new URL(teamDomain);
@@ -172,7 +184,7 @@ app.use("*", async (c, next) => {
 
 	try {
 		const { issuer, certsUrl } = getAccessUrls(TEAM_DOMAIN);
-		const JWKS = createRemoteJWKSet(certsUrl);
+		const JWKS = getCachedJWKS(certsUrl);
 		await jwtVerify(token, JWKS, {
 			issuer,
 			audience: POLICY_AUD,

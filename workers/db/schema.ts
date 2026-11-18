@@ -31,6 +31,7 @@ export const emails = sqliteTable("emails", {
 	raw_headers: text("raw_headers"),
 	auth_code: text("auth_code"),
 	quick_link: text("quick_link"),
+	quick_meta_version: integer("quick_meta_version").notNull().default(0),
 });
 
 export const attachments = sqliteTable("attachments", {
