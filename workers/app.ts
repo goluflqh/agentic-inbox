@@ -229,7 +229,7 @@ app.all("*", (c) => {
 export default {
 	fetch: app.fetch,
 	async email(
-		event: { raw: ReadableStream; rawSize: number },
+		event: { from?: string; to?: string; raw: ReadableStream; rawSize: number },
 		env: Env,
 		ctx: ExecutionContext,
 	) {

@@ -11,6 +11,20 @@ This runbook adds a domain to the live Agentic Inbox without guessing about DNS 
 - Outbound: selected per sender domain with `OUTBOUND_PROVIDER_BY_DOMAIN`
 - Resend is sending-only. Keep Resend Receiving disabled.
 
+## Express 1-Shot Autopilot Mode (Zero-Prompt)
+
+When the user provides `(1) domain`, `(2) registrar/web portal`, and `(3) Edge remote debugging enabled` (asking for full automation):
+
+- **Do NOT pause to ask** for mailbox name, display name, parking A/AAAA, or provider unless a genuine blocker/missing credential occurs:
+  - **Mailbox default:** create `hello@<domain>` (Display Name derived from the domain; catch-all auto-creates any other `@<domain>` address on inbound).
+  - **Website A/AAAA rule:** inspect HTTP response first. Preserve real website `A`/`AAAA`/`CNAME` records (DNS-only); skip registrar parking pages (e.g. NicNames default parking `159.203.143.218`).
+  - **Outbound provider auto-selection:** check configured local keys (`RESEND_API_KEY`, `RESEND_API_KEY_2`, `RESEND_API_KEY_3`...) and Resend domain quota (`GET /domains`); select the first slot with capacity (`resend`, `resend2`, `resend3`...) or fall back to `smtp2go` / `brevo` if `SMTP2GO_API_KEY` / `BREVO_API_KEY` is configured.
+- **Execution order (minimize deploys & tool calls):**
+  1. Run `scripts/cf-preflight.ps1` + DoH DNS snapshot + `cf zones create --name <domain> --type full` (gets assigned Cloudflare NS immediately).
+  2. Start `realbrowser-keepalive.ps1` once, batch registrar NS update via `node realbrowser.mjs` directly (avoid per-step `powershell` wrappers), and close the registrar tab.
+  3. Run **one** `add-mail-domain.ps1` command with `-ProvisionCloudflare -WaitForActive -ProvisionResend -VerifyPublicDns -Deploy` so Cloudflare activation polling, Email Routing (`--zone` without `--name` for apex), catch-all, `_dmarc`, Resend DNS sync, `wrangler.jsonc`, and `wrangler deploy` finish in a single pass.
+  4. Create `hello@<domain>` via `https://inbox.quanghuylee.cyou/domains` and run inbound/outbound checks, then close agent tabs and kill keepalive.
+
 ## Inputs to establish first
 
 Record these before changing anything:

@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true, Position = 0)]
   [string]$Domain,
 
-  [ValidateSet("resend", "smtp2go", "brevo", "cloudflare")]
+  [ValidatePattern("^(resend(\d+)?|smtp2go|brevo|cloudflare)$")]
   [string]$Provider = "resend",
 
   [ValidateSet("Cloudflare", "Registrar")]
@@ -10,6 +10,8 @@ param(
 
   [switch]$ProvisionCloudflare,
   [switch]$CreateZoneIfMissing,
+  [switch]$WaitForActive,
+  [int]$WaitTimeoutSeconds = 300,
   [switch]$ProvisionResend,
   [switch]$VerifyPublicDns,
   [switch]$Deploy,
@@ -187,6 +189,19 @@ function Provision-CloudflareDomain([string]$ZoneName) {
   Write-Host "Zone: $ZoneName (id=$zoneId, status=$($zone.status))"
   Write-Host "Assigned Cloudflare NS: [$nsList]"
 
+  if ($zone.status -ne "active" -and $WaitForActive -and -not $DryRun) {
+    Invoke-CfJson @("zones", "activation-check", "activate", "--zone", $zoneId) -AllowFailure -Mutating | Out-Null
+    $deadline = (Get-Date).AddSeconds($WaitTimeoutSeconds)
+    while ($zone.status -ne "active" -and (Get-Date) -lt $deadline) {
+      Write-Host "Waiting 15s for Cloudflare zone '$ZoneName' to become active..."
+      Start-Sleep -Seconds 15
+      $refreshed = ConvertTo-RecordArray (Invoke-CfJson @("zones", "list", "--name", $ZoneName) -AllowFailure)
+      $foundZone = @($refreshed | Where-Object { $_.name -eq $ZoneName }) | Select-Object -First 1
+      if ($foundZone) { $zone = $foundZone }
+    }
+    Write-Host "Zone status after wait: $($zone.status)"
+  }
+
   $records = if ($DryRun -and $zoneId -eq "<DRY_RUN_ZONE_ID>") {
     @()
   } else {
@@ -220,14 +235,22 @@ function Provision-CloudflareDomain([string]$ZoneName) {
       Write-Warning "Existing apex SPF found: $($existingRootSpf.content -join ', '). Preserving existing SPF; verify SPF merge manually instead of adding a second SPF record."
     }
 
+    $hasCfMx = @($records | Where-Object {
+      $_.type -eq "MX" -and $_.name -eq $ZoneName -and ($_.content -match "mx\.cloudflare\.net$")
+    }).Count -gt 0
+
     $catchAll = if ($DryRun -and $zoneId -eq "<DRY_RUN_ZONE_ID>") {
       $null
     } else {
       Invoke-CfJson @("email-routing", "rules", "catch-all", "get", "--zone", $ZoneId) -AllowFailure
     }
 
-    if (-not $catchAll -or $DryRun) {
-      Invoke-CfJson @("email-routing", "enable", "--zone", $ZoneId, "--name", $ZoneName) -AllowFailure -Mutating | Out-Null
+    if (-not $hasCfMx -or $DryRun) {
+      # Apex zones reject --name in cf email-routing enable ([2007]); try zone-only first, then --name for subdomains.
+      $enabledResp = Invoke-CfJson @("email-routing", "enable", "--zone", $ZoneId) -AllowFailure -Mutating
+      if (-not $enabledResp -and -not $DryRun) {
+        Invoke-CfJson @("email-routing", "enable", "--zone", $ZoneId, "--name", $ZoneName) -AllowFailure -Mutating | Out-Null
+      }
     }
 
     $alreadyRouted = $false
@@ -271,15 +294,33 @@ function Provision-CloudflareDomain([string]$ZoneName) {
   return $zone
 }
 
+function Get-ResendSecretName([string]$ProviderName) {
+  if ($ProviderName -match "^resend(\d+)$" -and [int]$Matches[1] -gt 1) {
+    return "RESEND_API_KEY_$($Matches[1])"
+  }
+  return "RESEND_API_KEY"
+}
+
 function Provision-ResendDomain([string]$ZoneName, $Zone) {
-  if ($Provider -ne "resend") {
+  if ($Provider -notmatch "^resend(\d+)?$") {
     Write-Host "Skipping Resend provisioning because Provider is '$Provider'."
     return
   }
-  $apiKey = $env:RESEND_API_KEY
+  $secretName = Get-ResendSecretName $Provider
+  $apiKey = [Environment]::GetEnvironmentVariable($secretName)
   if ([string]::IsNullOrWhiteSpace($apiKey)) {
-    Write-Warning "RESEND_API_KEY is not set in environment; skipping automated Resend API check/provisioning."
+    $apiKey = [Environment]::GetEnvironmentVariable($secretName, "User")
+  }
+  if ([string]::IsNullOrWhiteSpace($apiKey)) {
+    Write-Warning "$secretName is not set in environment; skipping automated Resend API check/provisioning."
     return
+  }
+  $apiKey = ($apiKey -replace '[\r\n\s]+', '')
+
+  if (-not $Zone -and -not $DryRun) {
+    Assert-CfReady
+    $allZones = ConvertTo-RecordArray (Invoke-CfJson @("zones", "list", "--name", $ZoneName) -AllowFailure)
+    $Zone = @($allZones | Where-Object { $_.name -eq $ZoneName }) | Select-Object -First 1
   }
 
   $headers = @{
@@ -343,22 +384,19 @@ function Provision-ResendDomain([string]$ZoneName, $Zone) {
 function Resolve-PublicDoh([string]$QueryName, [string]$RecordType, [int]$TypeCode) {
   $url = "https://cloudflare-dns.com/dns-query?name=$([uri]::EscapeDataString($QueryName))&type=$RecordType"
   try {
-    $resp = Invoke-RestMethod -Method Get -Uri $url -Headers @{ Accept = "application/dns-json" } -TimeoutSec 10
+    $resp = Invoke-RestMethod -Method Get -Uri $url -Headers @{ Accept = "application/dns-json" } -TimeoutSec 8
     if ($resp -and $resp.Answer) {
       return @($resp.Answer | Where-Object { $_.type -eq $TypeCode } | ForEach-Object { [string]$_.data })
     }
     return @()
   } catch {
-    if (Get-Command Resolve-DnsName -ErrorAction SilentlyContinue) {
-      $rows = @(Resolve-DnsName -Name $QueryName -Type $RecordType -Server 1.1.1.1 -DnsOnly -ErrorAction SilentlyContinue)
-      switch ($RecordType) {
-        "NS" { return @($rows | Where-Object { $_.Type -eq "NS" } | ForEach-Object { $_.NameHost }) }
-        "A" { return @($rows | Where-Object { $_.Type -in @("A", "CNAME") } | ForEach-Object { if ($_.IPAddress) { $_.IPAddress } else { $_.NameHost } }) }
-        "AAAA" { return @($rows | Where-Object { $_.Type -eq "AAAA" } | ForEach-Object { $_.IPAddress }) }
-        "MX" { return @($rows | Where-Object { $_.Type -eq "MX" } | ForEach-Object { "$($_.Preference) $($_.NameExchange)" }) }
-        "TXT" { return @($rows | Where-Object { $_.Type -eq "TXT" } | ForEach-Object { ($_.Strings -join "") }) }
+    try {
+      $ggUrl = "https://dns.google/resolve?name=$([uri]::EscapeDataString($QueryName))&type=$RecordType"
+      $resp = Invoke-RestMethod -Method Get -Uri $ggUrl -TimeoutSec 8
+      if ($resp -and $resp.Answer) {
+        return @($resp.Answer | Where-Object { $_.type -eq $TypeCode } | ForEach-Object { [string]$_.data })
       }
-    }
+    } catch {}
     return @()
   }
 }

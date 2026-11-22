@@ -38,7 +38,7 @@ export interface SendEmailParams {
 }
 
 type EmailAddress = string | { email: string; name: string };
-type OutboundProvider = "resend" | "brevo" | "smtp2go" | "cloudflare";
+type OutboundProvider = "resend" | `resend${number}` | "brevo" | "smtp2go" | "cloudflare";
 
 function normalizeRecipients(value: string | string[] | undefined): string[] | undefined {
 	if (!value) return undefined;
@@ -91,7 +91,12 @@ function resolveProvider(env: Env, params: SendEmailParams): OutboundProvider {
 }
 
 function isProvider(value: string | undefined): value is OutboundProvider {
-	return value === "resend" || value === "brevo" || value === "smtp2go" || value === "cloudflare";
+	return value === "resend" || /^resend\d+$/.test(value ?? "") || value === "brevo" || value === "smtp2go" || value === "cloudflare";
+}
+
+function resendSecretName(provider: OutboundProvider): string {
+	const match = provider.match(/^resend(\d+)$/);
+	return match && Number(match[1]) > 1 ? `RESEND_API_KEY_${match[1]}` : "RESEND_API_KEY";
 }
 
 function resendErrorMessage(status: number, body: unknown): string {
@@ -359,17 +364,21 @@ export async function sendEmail(
 ): Promise<{ messageId: string }> {
 	const deliverabilityParams = withPlainTextFallback(params);
 	const provider = resolveProvider(env, deliverabilityParams);
-	if (provider === "resend") {
-		if (!env.RESEND_API_KEY) throw new Error("Resend API key is not configured");
-		return sendWithResend(env.RESEND_API_KEY, deliverabilityParams);
+	if (provider === "resend" || /^resend\d+$/.test(provider)) {
+		const secretName = resendSecretName(provider);
+		const apiKey = (env as unknown as Record<string, string | undefined>)[secretName]?.trim();
+		if (!apiKey) throw new Error(`Resend API key (${secretName}) is not configured`);
+		return sendWithResend(apiKey, deliverabilityParams);
 	}
 	if (provider === "brevo") {
-		if (!env.BREVO_API_KEY) throw new Error("Brevo API key is not configured");
-		return sendWithBrevo(env.BREVO_API_KEY, deliverabilityParams);
+		const apiKey = env.BREVO_API_KEY?.trim();
+		if (!apiKey) throw new Error("Brevo API key is not configured");
+		return sendWithBrevo(apiKey, deliverabilityParams);
 	}
 	if (provider === "smtp2go") {
-		if (!env.SMTP2GO_API_KEY) throw new Error("SMTP2GO API key is not configured");
-		return sendWithSmtp2go(env.SMTP2GO_API_KEY, deliverabilityParams);
+		const apiKey = env.SMTP2GO_API_KEY?.trim();
+		if (!apiKey) throw new Error("SMTP2GO API key is not configured");
+		return sendWithSmtp2go(apiKey, deliverabilityParams);
 	}
 	return sendWithCloudflare(env.EMAIL, deliverabilityParams);
 }

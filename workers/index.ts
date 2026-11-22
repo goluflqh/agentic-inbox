@@ -1004,24 +1004,86 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env: Env, ctx: ExecutionContext) {
-	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
-	const parsedEmail = await new PostalMime().parse(rawEmail);
+type InboundMailboxResolution =
+	| { mailboxId: string }
+	| { ignored: true; reason: string }
+	| { error: string };
 
-	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) throw new Error("received email with empty to");
+function normalizeEmailAddress(raw?: string | null): string {
+	if (!raw) return "";
+	const trimmed = raw.trim().toLowerCase();
+	const bracketMatch = trimmed.match(/<([^>]+)>/);
+	return (bracketMatch ? bracketMatch[1] : trimmed).trim();
+}
 
-	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) => a.toLowerCase());
-	const allRecipients = parsedEmail.to.map((t) => t.address?.toLowerCase()).filter(Boolean) as string[];
-	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
-	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
+function resolveInboundMailboxId(
+	env: Env,
+	eventTo: string | undefined,
+	mimeTo: readonly string[],
+): InboundMailboxResolution {
+	const envelopeTo = normalizeEmailAddress(eventTo);
+	const allRecipients = mimeTo.map((addr) => normalizeEmailAddress(addr)).filter(Boolean);
+
+	if (!envelopeTo && allRecipients.length === 0) {
+		return { error: "received email with empty to" };
+	}
+
+	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[])
+		.map((addr) => normalizeEmailAddress(addr))
+		.filter(Boolean);
 
 	let mailboxId: string | undefined;
 	if (allowedAddresses.length > 0) {
-		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
-	if (!isConfiguredDomainAddress(env, mailboxId)) { console.log(`Ignoring email for ${mailboxId}: domain is not configured`); return; }
+		mailboxId =
+			(envelopeTo && allowedAddresses.includes(envelopeTo) ? envelopeTo : undefined) ??
+			allRecipients.find((addr) => allowedAddresses.includes(addr));
+		if (!mailboxId) {
+			return { ignored: true, reason: "no recipient matches EMAIL_ADDRESSES." };
+		}
+	} else {
+		mailboxId =
+			(envelopeTo && isConfiguredDomainAddress(env, envelopeTo) ? envelopeTo : undefined) ??
+			allRecipients.find((addr) => isConfiguredDomainAddress(env, addr)) ??
+			(envelopeTo || undefined) ??
+			allRecipients[0];
+	}
+
+	if (!mailboxId) {
+		return { error: "received email with no valid recipient address" };
+	}
+	if (!isConfiguredDomainAddress(env, mailboxId)) {
+		return { ignored: true, reason: `domain is not configured (${mailboxId})` };
+	}
+	return { mailboxId };
+}
+
+async function receiveEmail(
+	event: { from?: string; to?: string; raw: ReadableStream; rawSize: number },
+	env: Env,
+	ctx: ExecutionContext,
+) {
+	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
+	const parsedEmail = await new PostalMime().parse(rawEmail);
+
+	const allRecipients = (parsedEmail.to ?? [])
+		.map((t) => normalizeEmailAddress(t.address))
+		.filter(Boolean);
+	const ccRecipients = (parsedEmail.cc || [])
+		.map((e) => normalizeEmailAddress(e.address))
+		.filter(Boolean);
+	const bccRecipients = (parsedEmail.bcc || [])
+		.map((e) => normalizeEmailAddress(e.address))
+		.filter(Boolean);
+
+	const resolved = resolveInboundMailboxId(env, event.to, allRecipients);
+	if ("error" in resolved) {
+		throw new Error(resolved.error);
+	}
+	if ("ignored" in resolved) {
+		console.log(`Ignoring email: ${resolved.reason}`);
+		return;
+	}
+	const { mailboxId } = resolved;
 
 	const messageId = crypto.randomUUID();
 	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) {
@@ -1080,7 +1142,7 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 	await stub.createEmail(targetFolder, {
 		id: messageId, subject: parsedEmail.subject || "",
-		sender: senderAddress, recipient: allRecipients.join(", "),
+		sender: senderAddress, recipient: allRecipients.join(", ") || mailboxId,
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
 		date: new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
@@ -1092,4 +1154,4 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env
 
 }
 
-export { app, receiveEmail };
+export { app, receiveEmail, resolveInboundMailboxId };

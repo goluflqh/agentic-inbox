@@ -145,6 +145,13 @@ if ($resendEnv.IsSet) {
   Write-Check -Status "WARN" -Label "RESEND_API_KEY" -Detail "Not set in Process/User/Machine env (required for -ProvisionResend)"
 }
 
+$resend2Env = Get-EnvPresence -Name "RESEND_API_KEY_2"
+if ($resend2Env.IsSet) {
+  Write-Check -Status "PASS" -Label "RESEND_API_KEY_2" -Detail ("Present (scopes: {0})" -f ($resend2Env.Scopes -join ", "))
+} else {
+  Write-Check -Status "INFO" -Label "RESEND_API_KEY_2" -Detail "Not set (optional; needed only for -Provider resend2)"
+}
+
 $cfTokenEnv = Get-EnvPresence -Name "CLOUDFLARE_API_TOKEN"
 if ($cfTokenEnv.IsSet) {
   Write-Check -Status "WARN" -Label "CLOUDFLARE_API_TOKEN" -Detail ("Present (scopes: {0}); env var overrides 'cf auth login' OAuth profile" -f ($cfTokenEnv.Scopes -join ", "))

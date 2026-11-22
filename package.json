@@ -27,7 +27,8 @@
 		"local:start": "powershell -ExecutionPolicy Bypass -File scripts/local-start.ps1",
 		"local:stop": "powershell -ExecutionPolicy Bypass -File scripts/local-stop.ps1",
 		"local:status": "powershell -ExecutionPolicy Bypass -File scripts/local-status.ps1",
-		"domain:add": "powershell -ExecutionPolicy Bypass -File scripts/add-mail-domain.ps1"
+		"domain:add": "powershell -ExecutionPolicy Bypass -File scripts/add-mail-domain.ps1",
+		"domain:key": "powershell -ExecutionPolicy Bypass -File scripts/set-resend-key.ps1"
 	},
 	"dependencies": {
 		"@cloudflare/ai-chat": "^0.1.8",

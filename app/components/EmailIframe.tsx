@@ -4,6 +4,7 @@
 
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { prepareEmailBodyForIframe } from "~/lib/emailBody";
 
 interface EmailIframeProps {
 	body: string;
@@ -60,7 +61,8 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 		const iframe = iframeRef.current;
 		if (!iframe || !body) return;
 
-		const fragment = DOMPurify.sanitize(body, {
+		const preparedBody = prepareEmailBodyForIframe(body);
+		const fragment = DOMPurify.sanitize(preparedBody, {
 			USE_PROFILES: { html: true },
 			ADD_TAGS: ["style"],
 			FORBID_TAGS: ["form", "base"],
@@ -130,7 +132,12 @@ body {
 [style*="position: fixed"], [style*="position:fixed"], [style*="position: absolute"], [style*="position:absolute"] {
 	position: relative !important;
 }
-a { color: #2563eb; }
+a { color: #2563eb; text-decoration: underline; text-underline-offset: 2px; }
+.plain-text-email {
+	white-space: pre-wrap;
+	word-break: break-word;
+	line-height: 1.65;
+}
 img { max-width: 100%; height: auto; }
 blockquote {
 	border-left: 3px solid #d1d5db;
