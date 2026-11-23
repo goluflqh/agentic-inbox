@@ -197,16 +197,11 @@ function Provision-CloudflareDomain([string]$ZoneName) {
     $pollSec = [Math]::Max(5, $PollIntervalSeconds)
     Invoke-CfJson @("zones", "activation-check", "activate", "--zone", $zoneId) -AllowFailure -Mutating | Out-Null
     $startedAt = Get-Date
-    $lastCheckAt = $startedAt
     $deadline = $startedAt.AddSeconds($WaitTimeoutSeconds)
     while ($zone.status -ne "active" -and (Get-Date) -lt $deadline) {
       $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
       Write-Host ("Waiting {0}s for Cloudflare zone '{1}' to become active (elapsed={2}s)..." -f $pollSec, $ZoneName, $elapsed)
       Start-Sleep -Seconds $pollSec
-      if (((Get-Date) - $lastCheckAt).TotalSeconds -ge 45) {
-        Invoke-CfJson @("zones", "activation-check", "activate", "--zone", $zoneId) -AllowFailure -Mutating | Out-Null
-        $lastCheckAt = Get-Date
-      }
       $refreshed = ConvertTo-RecordArray (Invoke-CfJson @("zones", "list", "--name", $ZoneName) -AllowFailure)
       $foundZone = @($refreshed | Where-Object { $_.name -eq $ZoneName }) | Select-Object -First 1
       if ($foundZone) { $zone = $foundZone }
@@ -578,7 +573,7 @@ function Test-CanFastDeploy() {
 
 function Sync-BuildWranglerVars([string]$DomainsValue, [string]$ProviderValue) {
   $buildWrangler = Join-Path $Root "build\server\wrangler.json"
-  $js = 'const fs = require("fs"); const p = process.argv[1]; const d = process.argv[2]; const m = process.argv[3]; const c = JSON.parse(fs.readFileSync(p, "utf8")); c.vars = c.vars || {}; c.vars.DOMAINS = d; c.vars.OUTBOUND_PROVIDER_BY_DOMAIN = m; fs.writeFileSync(p, JSON.stringify(c), "utf8");'
+  $js = "const fs=require('fs');const p=process.argv[1];const d=process.argv[2];const m=process.argv[3];const c=JSON.parse(fs.readFileSync(p,'utf8'));c.vars=c.vars||{};c.vars.DOMAINS=d;c.vars.OUTBOUND_PROVIDER_BY_DOMAIN=m;fs.writeFileSync(p,JSON.stringify(c),'utf8');"
   Invoke-Step "node" @("-e", $js, $buildWrangler, $DomainsValue, $ProviderValue)
   Write-Host "[FastDeploy] Synced DOMAINS and OUTBOUND_PROVIDER_BY_DOMAIN into build/server/wrangler.json"
 }
