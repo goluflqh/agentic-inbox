@@ -12,9 +12,13 @@ param(
   [switch]$CreateZoneIfMissing,
   [switch]$WaitForActive,
   [int]$WaitTimeoutSeconds = 300,
+  [int]$PollIntervalSeconds = 8,
   [switch]$ProvisionResend,
   [switch]$VerifyPublicDns,
+  [switch]$VerifyInbound,
+  [string]$VerifyInboundTo = "",
   [switch]$Deploy,
+  [switch]$FastDeploy,
   [switch]$DryRun
 )
 
@@ -190,11 +194,19 @@ function Provision-CloudflareDomain([string]$ZoneName) {
   Write-Host "Assigned Cloudflare NS: [$nsList]"
 
   if ($zone.status -ne "active" -and $WaitForActive -and -not $DryRun) {
+    $pollSec = [Math]::Max(5, $PollIntervalSeconds)
     Invoke-CfJson @("zones", "activation-check", "activate", "--zone", $zoneId) -AllowFailure -Mutating | Out-Null
-    $deadline = (Get-Date).AddSeconds($WaitTimeoutSeconds)
+    $startedAt = Get-Date
+    $lastCheckAt = $startedAt
+    $deadline = $startedAt.AddSeconds($WaitTimeoutSeconds)
     while ($zone.status -ne "active" -and (Get-Date) -lt $deadline) {
-      Write-Host "Waiting 15s for Cloudflare zone '$ZoneName' to become active..."
-      Start-Sleep -Seconds 15
+      $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
+      Write-Host ("Waiting {0}s for Cloudflare zone '{1}' to become active (elapsed={2}s)..." -f $pollSec, $ZoneName, $elapsed)
+      Start-Sleep -Seconds $pollSec
+      if (((Get-Date) - $lastCheckAt).TotalSeconds -ge 45) {
+        Invoke-CfJson @("zones", "activation-check", "activate", "--zone", $zoneId) -AllowFailure -Mutating | Out-Null
+        $lastCheckAt = Get-Date
+      }
       $refreshed = ConvertTo-RecordArray (Invoke-CfJson @("zones", "list", "--name", $ZoneName) -AllowFailure)
       $foundZone = @($refreshed | Where-Object { $_.name -eq $ZoneName }) | Select-Object -First 1
       if ($foundZone) { $zone = $foundZone }
@@ -535,13 +547,121 @@ Write-Host "7. Run a real outbound test and inspect SPF, DKIM, and DMARC."
 Write-Host ""
 Write-Host "Runbook: $RunbookPath"
 
-if ($Deploy) {
-  if ($DryRun) {
-    Write-Host "[DRY-RUN] Would run: npm run typecheck; npm run build; npx wrangler deploy"
-  } else {
-    Write-Host ""
-    Invoke-Step "npm" @("run", "typecheck")
-    Invoke-Step "npm" @("run", "build")
-    Invoke-Step "npx" @("wrangler", "deploy")
+function Test-CanFastDeploy() {
+  $buildWrangler = Join-Path $Root "build\server\wrangler.json"
+  $buildEntry = Join-Path $Root "build\server\index.js"
+  if (-not (Test-Path -LiteralPath $buildWrangler) -or -not (Test-Path -LiteralPath $buildEntry)) {
+    Write-Host "[FastDeploy] Existing build/server artifacts not found; falling back to full build."
+    return $false
   }
+
+  $dirtySrc = & git -C $Root status --porcelain -- app workers 2>$null
+  if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($dirtySrc -join ""))) {
+    Write-Host "[FastDeploy] Uncommitted changes detected in app/ or workers/; falling back to full typecheck + build."
+    return $false
+  }
+
+  $buildTime = (Get-Item -LiteralPath $buildEntry).LastWriteTimeUtc
+  foreach ($dir in @("app", "workers")) {
+    $fullDir = Join-Path $Root $dir
+    if (-not (Test-Path -LiteralPath $fullDir)) { continue }
+    $newer = Get-ChildItem -LiteralPath $fullDir -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTimeUtc -gt $buildTime } |
+      Select-Object -First 1
+    if ($newer) {
+      Write-Host "[FastDeploy] Source file '$($newer.Name)' is newer than build/server/index.js; falling back to full build."
+      return $false
+    }
+  }
+  return $true
+}
+
+function Sync-BuildWranglerVars([string]$DomainsValue, [string]$ProviderValue) {
+  $buildWrangler = Join-Path $Root "build\server\wrangler.json"
+  $js = 'const fs = require("fs"); const p = process.argv[1]; const d = process.argv[2]; const m = process.argv[3]; const c = JSON.parse(fs.readFileSync(p, "utf8")); c.vars = c.vars || {}; c.vars.DOMAINS = d; c.vars.OUTBOUND_PROVIDER_BY_DOMAIN = m; fs.writeFileSync(p, JSON.stringify(c), "utf8");'
+  Invoke-Step "node" @("-e", $js, $buildWrangler, $DomainsValue, $ProviderValue)
+  Write-Host "[FastDeploy] Synced DOMAINS and OUTBOUND_PROVIDER_BY_DOMAIN into build/server/wrangler.json"
+}
+
+function Invoke-InboundVerification([string]$ZoneName) {
+  $recipient = if ([string]::IsNullOrWhiteSpace($VerifyInboundTo)) { "hello@$ZoneName" } else { $VerifyInboundTo.Trim() }
+  if ($DryRun) {
+    Write-Host "[DRY-RUN] Would send real inbound verification email to $recipient via Resend and poll delivery status."
+    return
+  }
+
+  $apiKey = [Environment]::GetEnvironmentVariable("RESEND_API_KEY_2")
+  $fromAddr = "Agentic Inbox Verify <hello@routerllm.bond>"
+  if ([string]::IsNullOrWhiteSpace($apiKey)) {
+    $apiKey = [Environment]::GetEnvironmentVariable("RESEND_API_KEY_2", "User")
+  }
+  if ([string]::IsNullOrWhiteSpace($apiKey)) {
+    $apiKey = [Environment]::GetEnvironmentVariable("RESEND_API_KEY")
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+      $apiKey = [Environment]::GetEnvironmentVariable("RESEND_API_KEY", "User")
+    }
+    $fromAddr = "Agentic Inbox Verify <hello@quanghuylee.cyou>"
+  }
+  if ([string]::IsNullOrWhiteSpace($apiKey)) {
+    Write-Warning "No local RESEND_API_KEY_2 or RESEND_API_KEY found; skipping automated inbound verification."
+    return
+  }
+
+  $headers = @{
+    Authorization  = "Bearer $(($apiKey -replace '[\r\n\s]+', ''))"
+    "Content-Type" = "application/json"
+  }
+  $payload = (@{
+    from    = $fromAddr
+    to      = @($recipient)
+    subject = "Inbound verification for $ZoneName"
+    text    = "Automated inbound routing check to $recipient via Cloudflare Email Routing -> $WorkerName."
+  } | ConvertTo-Json -Compress)
+
+  Write-Host ""
+  Write-Host "=== Inbound Delivery Verification ($recipient) ==="
+  $sent = Invoke-RestMethod -Method Post -Uri "https://api.resend.com/emails" -Headers $headers -Body $payload
+  Write-Host "Sent inbound test email id=$($sent.id) -> $recipient"
+
+  $lastEvent = "sent"
+  for ($i = 0; $i -lt 10; $i++) {
+    Start-Sleep -Seconds 3
+    $status = Invoke-RestMethod -Method Get -Uri "https://api.resend.com/emails/$($sent.id)" -Headers $headers
+    $lastEvent = [string]$status.last_event
+    if ($lastEvent -in @("delivered", "bounced", "complained")) {
+      break
+    }
+  }
+  Write-Host "Inbound test result: last_event=$lastEvent (recipient=$recipient)"
+  if ($lastEvent -ne "delivered") {
+    Write-Warning "Inbound email did not reach 'delivered' within 30s (last_event=$lastEvent). Inspect https://inbox.quanghuylee.cyou/mailbox/$recipient/emails/inbox"
+  } else {
+    Write-Host "Mailbox URL: https://inbox.quanghuylee.cyou/mailbox/$recipient/emails/inbox"
+  }
+}
+
+if ($Deploy -or $FastDeploy) {
+  $domainsJoined = ($domains -join ",")
+  if ($FastDeploy -and (Test-CanFastDeploy)) {
+    if ($DryRun) {
+      Write-Host "[DRY-RUN] [FastDeploy] Would sync build/server/wrangler.json vars and run: npx wrangler deploy (~15s, skipping Vite rebuild)"
+    } else {
+      Write-Host ""
+      Sync-BuildWranglerVars -DomainsValue $domainsJoined -ProviderValue $providerValue
+      Invoke-Step "npx" @("wrangler", "deploy")
+    }
+  } else {
+    if ($DryRun) {
+      Write-Host "[DRY-RUN] Would run: npm run typecheck; npm run build; npx wrangler deploy"
+    } else {
+      Write-Host ""
+      Invoke-Step "npm" @("run", "typecheck")
+      Invoke-Step "npm" @("run", "build")
+      Invoke-Step "npx" @("wrangler", "deploy")
+    }
+  }
+}
+
+if ($VerifyInbound) {
+  Invoke-InboundVerification -ZoneName $normalizedDomain
 }

@@ -51,6 +51,8 @@ foreach ($file in $psFiles) {
 }
 
 $wranglerBefore = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash
+$buildWranglerPath = Join-Path $Root "build\server\wrangler.json"
+$buildWranglerBefore = if (Test-Path -LiteralPath $buildWranglerPath) { (Get-FileHash -LiteralPath $buildWranglerPath -Algorithm SHA256).Hash } else { $null }
 
 Write-Host ""
 Write-Host "=== 2. Preflight Check (cf-preflight.ps1) ==="
@@ -108,10 +110,31 @@ Assert-True ($newRes.Output -match "Public DNS Verification") "New zone run did 
 Write-Host "[PASS] New PSL subdomain zone dry-run verified"
 
 Write-Host ""
-Write-Host "=== 5. Verify wrangler.jsonc Unchanged ==="
+Write-Host "=== 5. FastDeploy & VerifyInbound -DryRun (quanghuylee.cyou) ==="
+$fastRes = Invoke-ScriptCapture -ScriptPath $addScriptPath -Arguments @(
+  "-Domain", "quanghuylee.cyou",
+  "-Provider", "resend",
+  "-Scenario", "Cloudflare",
+  "-FastDeploy",
+  "-VerifyInbound",
+  "-DryRun"
+)
+Write-Host $fastRes.Output
+Assert-True ($fastRes.ExitCode -eq 0) "add-mail-domain.ps1 -FastDeploy -VerifyInbound -DryRun exited with $($fastRes.ExitCode)"
+Assert-True ($fastRes.Output -match "\[DRY-RUN\] (\[FastDeploy\] Would sync build/server/wrangler\.json|Would run: npm run typecheck)") "FastDeploy dry-run missing deploy plan output"
+Assert-True ($fastRes.Output -match "\[DRY-RUN\] Would send real inbound verification email to hello@quanghuylee\.cyou") "VerifyInbound dry-run missing expected message"
+Write-Host "[PASS] FastDeploy + VerifyInbound dry-run verified"
+
+Write-Host ""
+Write-Host "=== 6. Verify wrangler.jsonc & build/server/wrangler.json Unchanged ==="
 $wranglerAfter = (Get-FileHash -LiteralPath $ConfigPath -Algorithm SHA256).Hash
 Assert-True ($wranglerBefore -eq $wranglerAfter) "wrangler.jsonc was modified during dry-run tests! Before=$wranglerBefore After=$wranglerAfter"
 Write-Host ("[PASS] wrangler.jsonc SHA-256 unchanged: {0}" -f $wranglerAfter)
+if ($null -ne $buildWranglerBefore) {
+  $buildWranglerAfter = (Get-FileHash -LiteralPath $buildWranglerPath -Algorithm SHA256).Hash
+  Assert-True ($buildWranglerBefore -eq $buildWranglerAfter) "build/server/wrangler.json was modified during dry-run tests!"
+  Write-Host ("[PASS] build/server/wrangler.json SHA-256 unchanged: {0}" -f $buildWranglerAfter)
+}
 
 Write-Host ""
 Write-Host "ALL DOMAIN AUTOMATION TESTS PASSED."
